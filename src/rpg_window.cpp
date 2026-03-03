@@ -401,6 +401,42 @@ static bool GenerateCursorPng(const QString &path, int sizePx, const QColor &col
     return img.save(path, "PNG");
 }
 
+/** Callback for obs_scene_atomic_update: remove any scene item that uses the given source. */
+static void RemoveSourceFromSceneHelper(void *param, obs_scene_t *scene)
+{
+    obs_source_t *sourceToRemove = static_cast<obs_source_t *>(param);
+    if (!scene || !sourceToRemove)
+        return;
+    auto removeIfMatch = [](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+        obs_source_t *target = static_cast<obs_source_t *>(param);
+        if (obs_sceneitem_get_source(item) == target)
+            obs_sceneitem_remove(item);
+        return true;
+    };
+    obs_scene_enum_items(scene, removeIfMatch, sourceToRemove);
+}
+
+/** Remove the given source from every scene that contains it (so plugin unload doesn't leave refs). */
+static void removeSourceFromAllScenes(obs_source_t *source)
+{
+    if (!source)
+        return;
+    obs_frontend_source_list list = {};
+    obs_frontend_get_scenes(&list);
+    for (size_t i = 0; i < list.sources.num; i++) {
+        obs_source_t *sceneSrc = list.sources.array[i];
+        if (!sceneSrc || !obs_source_is_scene(sceneSrc))
+            continue;
+        obs_scene_t *scene = obs_scene_from_source(sceneSrc);
+        if (!scene)
+            continue;
+        obs_enter_graphics();
+        obs_scene_atomic_update(scene, RemoveSourceFromSceneHelper, source);
+        obs_leave_graphics();
+    }
+    obs_frontend_source_list_free(&list);
+}
+
 /** Find or add grid in the given scene and set visibility. Uses atomic update like the frontend. */
 struct GridSceneItemCtx {
     obs_source_t *gridSource = nullptr;
@@ -2228,5 +2264,9 @@ void RPGWindow::updateCursorPosition(const QString &sceneName, float x, float y)
 
 RPGWindow::~RPGWindow()
 {
-    /* Do not add/remove grid from scenes (stays in plugin only). */
+    /* Remove grid and cursor from all scenes so OBS can clear scene data cleanly on exit. */
+    if (gridSource_.Get())
+        removeSourceFromAllScenes(gridSource_.Get());
+    if (cursorSource_.Get())
+        removeSourceFromAllScenes(cursorSource_.Get());
 }
