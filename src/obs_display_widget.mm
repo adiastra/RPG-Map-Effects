@@ -3,10 +3,16 @@
 #include <QHideEvent>
 #include <QMouseEvent>
 #include <QPaintEvent>
+#include <QPainter>
+#include <QPolygonF>
 #include <QResizeEvent>
 #include <QShowEvent>
 #include <QWindow>
+#include <QTimer>
+#include <QCursor>
+#include <QApplication>
 #include <cmath>
+#include <mutex>
 
 extern "C" {
 #include <graphics/graphics.h>
@@ -17,6 +23,67 @@ extern "C" {
 #import <objc/objc.h>
 #endif
 
+/** Draws the direction arrow on top of the display using Qt (so it always shows). */
+class ArrowOverlay : public QWidget {
+public:
+    explicit ArrowOverlay(OBSDisplayWidget *parent) : QWidget(parent)
+    {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_TranslucentBackground);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        auto *disp = qobject_cast<OBSDisplayWidget *>(parent());
+        if (!disp)
+            return;
+        float fromX = 0, fromY = 0, toX = 0, toY = 0;
+        if (!disp->getDirectionArrow(fromX, fromY, toX, toY)) {
+            // Arrow is hidden: clear overlay to transparent so previous arrow doesn't persist.
+            QPainter p(this);
+            p.setCompositionMode(QPainter::CompositionMode_Source);
+            p.fillRect(rect(), Qt::transparent);
+            return;
+        }
+        int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+        if (!disp->canvasToWidget(fromX, fromY, width(), height(), x1, y1))
+            return;
+        if (!disp->canvasToWidget(toX, toY, width(), height(), x2, y2))
+            return;
+        QPainter p(this);
+        // Always clear previous arrow completely so we only ever see one arrow.
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.fillRect(rect(), Qt::transparent);
+        p.setCompositionMode(QPainter::CompositionMode_SourceOver);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(QPen(QColor(0, 255, 255), 5));
+        p.drawLine(x1, y1, x2, y2);
+        float dx = float(x2 - x1);
+        float dy = float(y2 - y1);
+        float len = std::sqrt(dx * dx + dy * dy);
+        if (len >= 1e-6f) {
+            float ux = dx / len;
+            float uy = dy / len;
+            const float h = 20.0f;
+            const float hw = 14.0f;
+            float bx = float(x2) - ux * h;
+            float by = float(y2) - uy * h;
+            QPolygonF head;
+            head << QPointF(x2, y2) << QPointF(bx - uy * hw, by + ux * hw)
+                 << QPointF(bx + uy * hw, by - ux * hw);
+            p.setBrush(QColor(0, 255, 255));
+            p.drawPolygon(head);
+        }
+    }
+};
+
+static void GetScaleAndCenterPos(uint32_t baseCX, uint32_t baseCY, uint32_t windowCX,
+                                 uint32_t windowCY, int &x, int &y, float &scale);
+
+static bool MapWidgetPosToScene(OBSDisplayWidget *w, const QPointF &widgetPos, float &sceneX,
+			       float &sceneY, float &normX, float &normY);
+
 OBSDisplayWidget::OBSDisplayWidget(QWidget *parent) : QWidget(parent)
 {
     // OBS display needs a native window handle
@@ -26,6 +93,30 @@ OBSDisplayWidget::OBSDisplayWidget(QWidget *parent) : QWidget(parent)
     setAttribute(Qt::WA_NoSystemBackground);
     setAttribute(Qt::WA_OpaquePaintEvent);
     setAttribute(Qt::WA_DontCreateNativeAncestors);
+
+    setMouseTracking(true);
+    arrowOverlay_ = new ArrowOverlay(this);
+    arrowOverlay_->setGeometry(0, 0, width(), height());
+    arrowOverlay_->raise();
+
+    // Fallback mouse tracking: poll global cursor so we still get sceneMouseMoved even
+    // when Qt doesn't deliver move events without a pressed button (e.g. macOS native surfaces).
+    mousePollTimer_ = new QTimer(this);
+    mousePollTimer_->setInterval(33); // ~30 FPS
+    connect(mousePollTimer_, &QTimer::timeout, this, [this]() {
+        QPoint globalPos = QCursor::pos();
+        QPointF localPos = mapFromGlobal(globalPos);
+
+        float sx = 0.0f;
+        float sy = 0.0f;
+        float nx = 0.0f;
+        float ny = 0.0f;
+
+        const bool inside = MapWidgetPosToScene(this, localPos, sx, sy, nx, ny);
+        const bool leftButtonDown = mouseLeftDown_;
+        emit sceneMouseMoved(sx, sy, nx, ny, inside, leftButtonDown);
+    });
+    mousePollTimer_->start();
 }
 
 OBSDisplayWidget::~OBSDisplayWidget()
@@ -74,6 +165,82 @@ obs_source_t *OBSDisplayWidget::getSceneSourceRef() const
     return sceneSource ? obs_source_get_ref(sceneSource) : nullptr;
 }
 
+void OBSDisplayWidget::setDirectionArrow(float fromX, float fromY, float toX, float toY)
+{
+    {
+        std::lock_guard<std::mutex> lock(directionArrowMutex_);
+        directionArrowShow_ = true;
+        directionArrowFromX_ = fromX;
+        directionArrowFromY_ = fromY;
+        directionArrowToX_ = toX;
+        directionArrowToY_ = toY;
+    }
+    if (arrowOverlay_)
+        arrowOverlay_->update();
+}
+
+void OBSDisplayWidget::clearDirectionArrow()
+{
+    {
+        std::lock_guard<std::mutex> lock(directionArrowMutex_);
+        directionArrowShow_ = false;
+    }
+    if (arrowOverlay_)
+        arrowOverlay_->update();
+}
+
+void OBSDisplayWidget::setCursorOverlay(bool show, float canvasX, float canvasY)
+{
+    {
+        std::lock_guard<std::mutex> lock(cursorOverlayMutex_);
+        cursorOverlayShow_ = show;
+        cursorOverlayX_ = canvasX;
+        cursorOverlayY_ = canvasY;
+    }
+    update();
+}
+
+void OBSDisplayWidget::setCursorOverlayStyle(int sizePx, uint32_t colorArgb)
+{
+    std::lock_guard<std::mutex> lock(cursorOverlayMutex_);
+    cursorOverlaySizePx_ = (sizePx < 4) ? 4 : ((sizePx > 128) ? 128 : sizePx);
+    cursorOverlayColorArgb_ = colorArgb;
+}
+
+bool OBSDisplayWidget::getDirectionArrow(float &fromX, float &fromY, float &toX, float &toY) const
+{
+    std::lock_guard<std::mutex> lock(directionArrowMutex_);
+    if (!directionArrowShow_)
+        return false;
+    fromX = directionArrowFromX_;
+    fromY = directionArrowFromY_;
+    toX = directionArrowToX_;
+    toY = directionArrowToY_;
+    return true;
+}
+
+bool OBSDisplayWidget::canvasToWidget(float canvasX, float canvasY, int widgetW, int widgetH,
+                                      int &outX, int &outY) const
+{
+    if (widgetW <= 0 || widgetH <= 0)
+        return false;
+    obs_video_info ovi = {};
+    if (!obs_get_video_info(&ovi) || ovi.base_width == 0 || ovi.base_height == 0)
+        return false;
+    const qreal dpr = devicePixelRatioF();
+    const uint32_t ww = uint32_t(std::max(1, int(widgetW * dpr)));
+    const uint32_t wh = uint32_t(std::max(1, int(widgetH * dpr)));
+    const uint32_t sw = ovi.base_width;
+    const uint32_t sh = ovi.base_height;
+    int viewX = 0;
+    int viewY = 0;
+    float scale = 1.0f;
+    GetScaleAndCenterPos(sw, sh, ww, wh, viewX, viewY, scale);
+    outX = int((viewX + canvasX * scale) / dpr);
+    outY = int((viewY + canvasY * scale) / dpr);
+    return true;
+}
+
 void OBSDisplayWidget::showEvent(QShowEvent *e)
 {
     QWidget::showEvent(e);
@@ -114,6 +281,10 @@ void OBSDisplayWidget::resizeEvent(QResizeEvent *e)
     if (display) {
         const qreal dpr = devicePixelRatioF();
         obs_display_resize(display, uint32_t(width() * dpr), uint32_t(height() * dpr));
+    }
+    if (arrowOverlay_) {
+        arrowOverlay_->setGeometry(0, 0, width(), height());
+        arrowOverlay_->raise();
     }
 }
 
@@ -342,6 +513,44 @@ void OBSDisplayWidget::DrawCallback(void *data, uint32_t cx, uint32_t cy)
         }
     }
 
+    // Cursor overlay (preview only): dot at cursor position
+    {
+        bool show = false;
+        float cx = 0.0f, cy = 0.0f;
+        int sizePx = 16;
+        uint32_t colorArgb = 0xFFFFFFFFu;
+        {
+            std::lock_guard<std::mutex> lock(self->cursorOverlayMutex_);
+            show = self->cursorOverlayShow_;
+            if (show) {
+                cx = self->cursorOverlayX_;
+                cy = self->cursorOverlayY_;
+                sizePx = self->cursorOverlaySizePx_;
+                colorArgb = self->cursorOverlayColorArgb_;
+            }
+        }
+        if (show && sizePx > 0) {
+            const float half = float(sizePx) * 0.5f;
+            gs_render_start(true);
+            gs_vertex2f(cx - half, cy - half);
+            gs_vertex2f(cx + half, cy - half);
+            gs_vertex2f(cx + half, cy + half);
+            gs_vertex2f(cx - half, cy - half);
+            gs_vertex2f(cx + half, cy + half);
+            gs_vertex2f(cx - half, cy + half);
+            gs_vertbuffer_t *vb = gs_render_save();
+            if (vb) {
+                gs_load_vertexbuffer(vb);
+                gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+                gs_eparam_t *colorParam = gs_effect_get_param_by_name(solid, "color");
+                gs_effect_set_color(colorParam, colorArgb);
+                while (gs_effect_loop(solid, "Solid"))
+                    gs_draw(GS_TRIS, 0, 6);
+                gs_vertexbuffer_destroy(vb);
+            }
+        }
+    }
+
 	gs_matrix_pop();
 	gs_projection_pop();
 	gs_viewport_pop();
@@ -349,6 +558,9 @@ void OBSDisplayWidget::DrawCallback(void *data, uint32_t cx, uint32_t cy)
 
 void OBSDisplayWidget::mousePressEvent(QMouseEvent *e)
 {
+    if (e->button() == Qt::LeftButton)
+        mouseLeftDown_ = true;
+
 	QWidget::mousePressEvent(e);
 
 	float sx = 0.0f;
@@ -358,4 +570,21 @@ void OBSDisplayWidget::mousePressEvent(QMouseEvent *e)
 
 	const bool inside = MapWidgetPosToScene(this, e->position(), sx, sy, nx, ny);
 	emit sceneClicked(sx, sy, nx, ny, inside);
+}
+
+void OBSDisplayWidget::mouseMoveEvent(QMouseEvent *e)
+{
+	// We rely on the polling timer to emit sceneMouseMoved so that we always
+	// get updates even when the mouse is not pressed. Just forward to base.
+	QWidget::mouseMoveEvent(e);
+}
+
+void OBSDisplayWidget::mouseReleaseEvent(QMouseEvent *e)
+{
+    if (e->button() == Qt::LeftButton) {
+        mouseLeftDown_ = false;
+        clearDirectionArrow();
+    }
+
+	QWidget::mouseReleaseEvent(e);
 }

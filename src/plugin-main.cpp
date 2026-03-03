@@ -3,6 +3,7 @@
 
 #include <QAction>
 #include <QObject>
+#include <QWidget>
 
 #include "rpg_window.hpp"
 

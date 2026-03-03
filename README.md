@@ -49,6 +49,14 @@ patching OBS core.
     - Clear selected / last / all, with configured fade‑out where applicable.
   - Double‑click / edit labels in the list to rename instances; labels update the in‑scene text.
 
+- **Set direction (click‑to‑face)**
+  - Check **Set direction (click map)**, then click on the map to set the **selected** effect’s rotation so it “faces” that point.
+  - Useful for characters or directional effects; rotation is applied to the FX scene item.
+
+- **Cursor on output**
+  - **Show cursor on output**: adds a small dot to the battlemap that follows the mouse, drawn on stream/recording.
+  - Cursor uses **Screen** blend. **Cursor** size (8–64 px) and **Cursor color…** are configurable; the dot is generated as a PNG and updated when size/color change.
+
 ---
 
 ## Building inside the OBS source tree (macOS)
@@ -118,8 +126,8 @@ The plugin is designed to build **inside an OBS Studio checkout**.
 - The UI is a **floating window**, not a dock, to maximize map real estate.
 - All scene and source manipulation uses the public OBS API; no OBS core patches are required.
 
-Planned features include:
+Possible future improvements:
 
-- Mouse‑driven FX rotation (click‑to‑face and live drag)
-- Visible cursor overlay drawn on output with configurable style/size/color
+- Live drag rotation (drag to rotate the selected FX continuously)
+- Optional temporary arrow overlay when setting direction
 
