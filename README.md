@@ -1,33 +1,125 @@
-# rpg-map-effects (MVP)
+## RPG Map Effects – OBS battlemap helper
 
-This is a minimal OBS Studio frontend plugin that adds **Tools → RPG Map Effects**.
-Click it to open a **standalone window** containing an `obs_display_t` render surface.
+`RPG Map Effects` is an OBS Studio **frontend plugin** that adds a tool window under  
+**Tools → RPG Map Effects** for running tactical battle maps with:
 
-**MVP behavior:** the window renders OBS's main texture.  
-Next steps: render a chosen battlemap scene + click-to-scene coordinate mapping.
+- **Battlemap scene picker** linked to Program output
+- **Grid overlay** (preview + optional on-stream image overlay)
+- **FX template scenes** (named `FX: Something`) you can spawn onto the map
+- **Sequenced FX** using `[250] name`–style delays
+- **Per‑template defaults** (fade, lifetime, label, sequencing)
 
-## Build (macOS) — recommended approach
+Everything lives inside this plugin; it uses only public OBS APIs and does **not** require
+patching OBS core.
 
-This project is meant to be built **inside the OBS Studio source tree**.
+---
 
-1. Clone OBS Studio (with submodules):
-   - `git clone --recursive https://github.com/obsproject/obs-studio.git`
+## Features (current)
 
-2. Copy this folder to:
-   - `obs-studio/plugins/rpg-map-effects`
+- **Battlemap view**
+  - Choose a battlemap scene from a dropdown; the plugin window and Program scene follow it.
+  - Click on the map display to drive FX placement and selection.
 
-3. Edit:
-   - `obs-studio/plugins/CMakeLists.txt`
-   Add this line in alphabetical order with other plugins:
-   - `add_obs_plugin (rpg-map-effects PLATFORMS MACOS)`
+- **Grid overlay**
+  - Preview-only grid (in the plugin window) with:
+    - Cell size (px)
+    - Line width (px)
+    - Color
+  - **Show grid on output**:
+    - Creates/ensures an image source named `RPG Map Grid`.
+    - Renders a PNG at the base canvas size and adds it as a source to the selected battlemap scene.
+    - Places the grid source on top of other sources.
+    - Checkbox on → grid visible; off → grid hidden (item stays in the scene).
 
-4. Configure/build OBS Studio as usual (Xcode generator is common on macOS).
-   When OBS builds, it will also build this plugin.
+- **FX template scenes**
+  - Any scene named like `FX: Something` (case‑insensitive `fx:` prefix) is treated as an **effect template**.
+  - You can pick an FX template, then:
+    - Click on the map to **spawn** an instance into the current battlemap.
+    - Configure:
+      - **Sequence [ms]** using `[250] name` prefixes in the template to stage child items.
+      - **Label on map** (optional text inside the FX scene, moves with the effect).
+      - **Fade‑out** duration (ms) for a hide transition when clearing.
+      - **Lifetime** (seconds, `0` = infinite) to auto‑clear.
+  - Per‑template defaults (sequence, label, fade, lifetime) are saved per template UUID.
 
-5. Run OBS from your build output, then open:
+- **Active effects list**
+  - Shows all currently active FX instances on the map.
+  - Lets you:
+    - Select FX (also via click‑nearest on the map).
+    - Clear selected / last / all, with configured fade‑out where applicable.
+  - Double‑click / edit labels in the list to rename instances; labels update the in‑scene text.
+
+---
+
+## Building inside the OBS source tree (macOS)
+
+The plugin is designed to build **inside an OBS Studio checkout**.
+
+1. **Clone OBS Studio** (with submodules):
+
+   ```bash
+   git clone --recursive https://github.com/obsproject/obs-studio.git
+   ```
+
+2. **Clone this plugin into the `plugins/` folder** of that checkout:
+
+   ```bash
+   cd obs-studio/plugins
+   git clone https://github.com/adiastra/RPG-Map-Effects.git rpg-map-effects
+   ```
+
+3. **Wire the plugin into OBS CMake**  
+   Edit `obs-studio/plugins/CMakeLists.txt` and add, in the plugins section:
+
+   ```cmake
+   add_obs_plugin(rpg-map-effects PLATFORMS MACOS)
+   ```
+
+4. **Configure / build OBS** as usual (e.g. Xcode generator on macOS).  
+   When OBS builds, it will also build the `rpg-map-effects` plugin.
+
+5. **Run OBS** from your build output and open:
+
    - **Tools → RPG Map Effects**
+
+---
+
+## Usage overview
+
+1. **Select your battlemap scene**
+   - Use the scene dropdown at the top of the window.
+   - The plugin preview switches, and OBS Program is set to that scene.
+
+2. **Configure and show the grid**
+   - Adjust cell size, line width, and color.
+   - Check **Show grid** to see the preview grid in the plugin window.
+   - Check **Show grid on output** to add the `RPG Map Grid` image source to your battlemap
+     scene and show it on stream/recording.
+
+3. **Create FX template scenes**
+   - In OBS, make scenes named `FX: Something` and build your effect using normal sources.
+   - Optional sequencing: prefix child source names with `[250]`, `[1000]`, etc. to delay their
+     reveal in milliseconds.
+
+4. **Spawn FX onto the map**
+   - Choose a template in the **Template Scene** combo.
+   - Configure sequence / label / fade / lifetime as desired.
+   - Click on the map display and use **Spawn at last click** to drop the effect.
+
+5. **Manage active effects**
+   - Use the **Active Effects** list to select, rename, and clear effects.
+   - Clear buttons support per‑effect fade‑out when configured.
+
+---
 
 ## Notes
 
-- This is a frontend plugin (uses `obs-frontend-api.h`) and Qt widgets.
-- It intentionally starts as a **floating window**, not a dock, to maximize map real estate.
+- This is a **frontend plugin** that uses `obs-frontend-api.h` and Qt widgets.
+- The UI is a **floating window**, not a dock, to maximize map real estate.
+- All scene and source manipulation uses the public OBS API; no OBS core patches are required.
+
+Planned features include:
+
+- Mouse‑driven FX rotation (click‑to‑face and live drag)
+- Visible cursor overlay drawn on output with configurable style/size/color
+
