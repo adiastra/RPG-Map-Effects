@@ -558,18 +558,24 @@ void OBSDisplayWidget::DrawCallback(void *data, uint32_t cx, uint32_t cy)
 
 void OBSDisplayWidget::mousePressEvent(QMouseEvent *e)
 {
-    if (e->button() == Qt::LeftButton)
-        mouseLeftDown_ = true;
-
-	QWidget::mousePressEvent(e);
-
 	float sx = 0.0f;
 	float sy = 0.0f;
 	float nx = 0.0f;
 	float ny = 0.0f;
-
 	const bool inside = MapWidgetPosToScene(this, e->position(), sx, sy, nx, ny);
-	emit sceneClicked(sx, sy, nx, ny, inside);
+
+	if (e->button() == Qt::LeftButton) {
+		mouseLeftDown_ = true;
+		QWidget::mousePressEvent(e);
+		emit sceneClicked(sx, sy, nx, ny, inside);
+		return;
+	}
+	if (e->button() == Qt::RightButton) {
+		QWidget::mousePressEvent(e);
+		emit sceneRightClicked(sx, sy, nx, ny, inside);
+		return;
+	}
+	QWidget::mousePressEvent(e);
 }
 
 void OBSDisplayWidget::mouseMoveEvent(QMouseEvent *e)
@@ -581,10 +587,10 @@ void OBSDisplayWidget::mouseMoveEvent(QMouseEvent *e)
 
 void OBSDisplayWidget::mouseReleaseEvent(QMouseEvent *e)
 {
-    if (e->button() == Qt::LeftButton) {
-        mouseLeftDown_ = false;
-        clearDirectionArrow();
-    }
-
+	if (e->button() == Qt::LeftButton) {
+		mouseLeftDown_ = false;
+		clearDirectionArrow();
+		emit sceneLeftReleased();
+	}
 	QWidget::mouseReleaseEvent(e);
 }

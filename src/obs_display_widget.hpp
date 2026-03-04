@@ -47,6 +47,8 @@ public:
 
 signals:
     void sceneClicked(float sceneX, float sceneY, float normX, float normY, bool inside);
+    void sceneRightClicked(float sceneX, float sceneY, float normX, float normY, bool inside);
+    void sceneLeftReleased();
     void sceneMouseMoved(float sceneX, float sceneY, float normX, float normY, bool inside, bool leftButtonDown);
 
 protected:

@@ -54,6 +54,10 @@ private:
     QMap<QString, std::vector<FxInstance>> fxByMapSceneUuid_;
     QString currentMapSceneUuid_;
 
+    /** Right-click menu lock: move or rotate the selected FX until left-click releases. */
+    enum class FxLockMode { None, Move, Rotate };
+    FxLockMode fxLockMode_ = FxLockMode::None;
+
     QListWidget *fxList = nullptr;
     QLineEdit *labelEdit = nullptr;
     QComboBox *sceneCombo_ = nullptr;

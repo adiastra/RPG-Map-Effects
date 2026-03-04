@@ -9,6 +9,7 @@
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
+#include <QCursor>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -1071,6 +1072,7 @@ RPGWindow::RPGWindow()
                          display->setSceneByName(sceneName);
                          currentMapSceneUuid_ = getMapSceneUuidFromName(sceneName);
                          refreshFxListForCurrentMap();
+                         fxLockMode_ = FxLockMode::None;
                          if (setDirectionCheck_)
                              setDirectionCheck_->setChecked(false);
                          if (display)
@@ -1361,21 +1363,44 @@ RPGWindow::RPGWindow()
                              }
                              mouseLabel->setText(text);
                          }
-                         // Direction arrow / rotation logic.
-                         if (!display || !setDirectionCheck_ || !setDirectionCheck_->isChecked() || !fxList) {
-                             // Not in rotate mode or no display/selection: ensure arrow is off.
+                         // Move lock: FX center follows cursor (item has OBS_ALIGN_CENTER).
+                         if (fxLockMode_ == FxLockMode::Move && display && fxList && inside) {
+                             const int row = fxList->currentRow();
+                             if (row >= 0 && row < (int)activeFx.size()) {
+                                 const FxInstance &inst = activeFx[static_cast<size_t>(row)];
+                                 OBSSourceAutoRelease mapSrc(obs_get_source_by_uuid(inst.mapSceneUuid.toUtf8().constData()));
+                                 if (mapSrc.Get()) {
+                                     obs_scene_t *scene = obs_scene_from_source(mapSrc.Get());
+                                     obs_sceneitem_t *item = scene ? obs_scene_find_sceneitem_by_id(scene, inst.sceneItemId) : nullptr;
+                                     if (item) {
+                                         obs_video_info ovi = {};
+                                         if (obs_get_video_info(&ovi) && ovi.base_width > 0 && ovi.base_height > 0) {
+                                             const uint32_t sceneW = obs_source_get_width(mapSrc.Get());
+                                             const uint32_t sceneH = obs_source_get_height(mapSrc.Get());
+                                             if (sceneW > 0 && sceneH > 0) {
+                                                 const float sceneX = x * float(sceneW) / float(ovi.base_width);
+                                                 const float sceneY = y * float(sceneH) / float(ovi.base_height);
+                                                 struct vec2 pos;
+                                                 vec2_set(&pos, sceneX, sceneY);
+                                                 obs_sceneitem_set_pos(item, &pos);
+                                             }
+                                         }
+                                     }
+                                 }
+                             }
+                             return;
+                         }
+
+                         // Rotate: locked rotate mode (always) or Set direction + left button down
+                         const bool inRotateMode = (fxLockMode_ == FxLockMode::Rotate) ||
+                             (setDirectionCheck_ && setDirectionCheck_->isChecked() && leftButtonDown);
+                         if (!display || !inRotateMode || !fxList) {
                              if (display)
                                  display->clearDirectionArrow();
                              return;
                          }
 
-                         if (!leftButtonDown) {
-                             // Rotate mode on but not dragging: arrow must not be visible.
-                             display->clearDirectionArrow();
-                             return;
-                         }
-
-                         // Rotate mode + left button down + FX selected: show single live arrow and rotate FX.
+                         // Rotate mode + FX selected: show arrow and rotate FX toward cursor.
                          const int row = fxList->currentRow();
                          if (row < 0 || row >= (int)activeFx.size()) {
                              display->clearDirectionArrow();
@@ -1404,15 +1429,23 @@ RPGWindow::RPGWindow()
                              return;
                          }
 
-                         // Live preview: arrow from FX center toward mouse (only while dragging).
                          display->setDirectionArrow(cx, cy, x, y);
-
-                         // Live rotation: make the FX face the arrow direction while moving.
                          const float dx = x - cx;
                          const float dy = y - cy;
                          const float angleRad = std::atan2(dy, dx);
                          const float angleDeg = angleRad * (180.0f / 3.14159265f);
                          obs_sceneitem_set_rot(item, angleDeg);
+                     });
+
+    // Left-click release: exit move/rotate lock.
+    QObject::connect(display, &OBSDisplayWidget::sceneLeftReleased, this, [this]() {
+                         if (fxLockMode_ != FxLockMode::None) {
+                             fxLockMode_ = FxLockMode::None;
+                             if (setDirectionCheck_)
+                                 setDirectionCheck_->setChecked(false);
+                             if (display)
+                                 display->clearDirectionArrow();
+                         }
                      });
 
     setDirectionCheck_ = new QCheckBox("Set direction", this);
@@ -1697,6 +1730,7 @@ RPGWindow::RPGWindow()
                              activeFx.erase(activeFx.begin() + row);
                              delete fxList->takeItem(row);
 
+                             fxLockMode_ = FxLockMode::None;
                              if (display)
                                  display->clearDirectionArrow();
                              if (setDirectionCheck_)
@@ -1736,11 +1770,61 @@ RPGWindow::RPGWindow()
                          }
                      });
 
+    // Right-click on map: if over an FX, show context menu (Move / Rotate / Clear). Lock until left-click for Move/Rotate.
+    QObject::connect(display, &OBSDisplayWidget::sceneRightClicked, this,
+                     [this, fadeSpin](float sceneX, float sceneY, float, float, bool inside) {
+                         if (!inside || !fxList)
+                             return;
+                         const int idx = findNearestFxInstanceIndex(sceneX, sceneY);
+                         if (idx < 0 || idx >= fxList->count())
+                             return;
+                         fxList->setCurrentRow(idx);
+                         const int row = idx;
+                         QMenu menu(this);
+                         QAction *moveAct = menu.addAction(QStringLiteral("Move"));
+                         QAction *rotateAct = menu.addAction(QStringLiteral("Rotate"));
+                         QAction *clearAct = menu.addAction(QStringLiteral("Clear"));
+                         QAction *chosen = menu.exec(QCursor::pos());
+                         if (chosen == clearAct) {
+                             const int fadeMs = fadeSpin ? fadeSpin->value() : 600;
+                             const FxInstance &inst = activeFx[static_cast<size_t>(row)];
+                             fadeOutAndRemoveInstance(inst, fadeMs);
+                             auto it = fxByMapSceneUuid_.find(inst.mapSceneUuid);
+                             if (it != fxByMapSceneUuid_.end()) {
+                                 std::vector<FxInstance> &vec = it.value();
+                                 for (size_t i = 0; i < vec.size(); ++i) {
+                                     if (vec[i].effectUuid == inst.effectUuid && vec[i].sceneItemId == inst.sceneItemId) {
+                                         vec.erase(vec.begin() + (long)i);
+                                         break;
+                                     }
+                                 }
+                             }
+                             activeFx.erase(activeFx.begin() + row);
+                             delete fxList->takeItem(row);
+                             fxLockMode_ = FxLockMode::None;
+                             if (display)
+                                 display->clearDirectionArrow();
+                             if (setDirectionCheck_)
+                                 setDirectionCheck_->setChecked(false);
+                         } else if (chosen == moveAct) {
+                             fxLockMode_ = FxLockMode::Move;
+                             if (setDirectionCheck_)
+                                 setDirectionCheck_->setChecked(false);
+                             if (display)
+                                 display->clearDirectionArrow();
+                         } else if (chosen == rotateAct) {
+                             fxLockMode_ = FxLockMode::Rotate;
+                             if (setDirectionCheck_)
+                                 setDirectionCheck_->setChecked(true);
+                         }
+                     });
+
     QObject::connect(fxList, &QListWidget::currentRowChanged, this, [this, scenePosToCanvas](int row) {
         if (!labelEdit)
             return;
         if (row < 0 || row >= (int)activeFx.size()) {
             labelEdit->clear();
+            fxLockMode_ = FxLockMode::None;
             if (display)
                 display->clearDirectionArrow();
             return;
@@ -1959,6 +2043,7 @@ RPGWindow::RPGWindow()
         activeFx.clear();
         fxList->clear();
 
+        fxLockMode_ = FxLockMode::None;
         if (display)
             display->clearDirectionArrow();
         if (setDirectionCheck_)
