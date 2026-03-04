@@ -377,31 +377,6 @@ static bool WriteBlankGridPng(const QString &path)
     return img.save(path, "PNG");
 }
 
-static const char *kCursorSourceName = "RPG Map Cursor";
-
-static QString GetCursorPngPath()
-{
-    return QDir::temp().absoluteFilePath(QStringLiteral("rpg_map_effects_cursor.png"));
-}
-
-/** Generate a simple dot (circle) cursor PNG. Size is diameter in pixels; image is size*2 square. */
-static bool GenerateCursorPng(const QString &path, int sizePx, const QColor &color)
-{
-    if (sizePx < 4 || sizePx > 128)
-        return false;
-    const int side = sizePx * 2;
-    QImage img(side, side, QImage::Format_ARGB32);
-    img.fill(Qt::transparent);
-    QPainter p(&img);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(Qt::NoPen);
-    p.setBrush(color);
-    const double left = (side - sizePx) / 2.0;
-    p.drawEllipse(QRectF(left, left, double(sizePx), double(sizePx)));
-    p.end();
-    return img.save(path, "PNG");
-}
-
 /** Callback for obs_scene_atomic_update: remove any scene item that uses the given source. */
 static void RemoveSourceFromSceneHelper(void *param, obs_scene_t *scene)
 {
@@ -501,203 +476,6 @@ static void addGridToSceneAndSetVisible(obs_scene_t *scene, obs_source_t *gridSo
     obs_enter_graphics();
     obs_scene_atomic_update(scene, AddOrShowGridInSceneHelper, &data);
     obs_leave_graphics();
-}
-
-struct CursorSceneItemCtx {
-    obs_source_t *cursorSource = nullptr;
-    obs_sceneitem_t *item = nullptr;
-};
-
-static bool findCursorItemInScene(obs_scene_t *, obs_sceneitem_t *item, void *param)
-{
-    auto *ctx = static_cast<CursorSceneItemCtx *>(param);
-    if (!ctx->cursorSource)
-        return true;
-    obs_source_t *src = obs_sceneitem_get_source(item);
-    if (src != ctx->cursorSource)
-        return true;
-    ctx->item = item;
-    obs_sceneitem_addref(item);
-    return false;
-}
-
-struct AddCursorToSceneData {
-    obs_source_t *cursorSource = nullptr;
-    bool visible = false;
-    float posX = 0.0f;
-    float posY = 0.0f;
-};
-
-static void AddOrShowCursorInSceneHelper(void *param, obs_scene_t *scene)
-{
-    auto *data = static_cast<AddCursorToSceneData *>(param);
-    if (!data || !data->cursorSource || !scene)
-        return;
-
-    CursorSceneItemCtx ctx;
-    ctx.cursorSource = data->cursorSource;
-    obs_scene_enum_items(scene, findCursorItemInScene, &ctx);
-
-    struct vec2 pos;
-    vec2_set(&pos, data->posX, data->posY);
-
-    if (ctx.item) {
-        obs_sceneitem_set_visible(ctx.item, data->visible);
-        obs_sceneitem_set_pos(ctx.item, &pos);
-        obs_sceneitem_release(ctx.item);
-        return;
-    }
-
-    obs_sceneitem_t *item = obs_scene_add(scene, data->cursorSource);
-    if (item) {
-        obs_sceneitem_set_visible(item, data->visible);
-        obs_sceneitem_set_order(item, OBS_ORDER_MOVE_TOP);
-        obs_sceneitem_set_alignment(item, OBS_ALIGN_CENTER);
-        obs_sceneitem_set_blending_mode(item, OBS_BLEND_SCREEN);
-        obs_sceneitem_set_pos(item, &pos);
-        obs_sceneitem_release(item);
-    }
-}
-
-struct UpdateCursorPosData {
-    obs_source_t *cursorSource = nullptr;
-    float posX = 0.0f;
-    float posY = 0.0f;
-};
-
-static void UpdateCursorPosInSceneHelper(void *param, obs_scene_t *scene)
-{
-    auto *data = static_cast<UpdateCursorPosData *>(param);
-    if (!data || !data->cursorSource || !scene)
-        return;
-
-    CursorSceneItemCtx ctx;
-    ctx.cursorSource = data->cursorSource;
-    obs_scene_enum_items(scene, findCursorItemInScene, &ctx);
-    if (!ctx.item)
-        return;
-
-    struct vec2 pos;
-    vec2_set(&pos, data->posX, data->posY);
-    obs_sceneitem_set_pos(ctx.item, &pos);
-    obs_sceneitem_release(ctx.item);
-}
-
-/** Param for graphics-thread cursor position task; task frees it. */
-struct CursorPosTaskParam {
-    char *sceneName = nullptr;
-    obs_source_t *cursorSource = nullptr;
-    float posX = 0.0f;
-    float posY = 0.0f;
-};
-
-static void ApplyCursorPositionTask(void *param)
-{
-    auto *p = static_cast<CursorPosTaskParam *>(param);
-    if (!p || !p->sceneName || !p->cursorSource) {
-        if (p) {
-            if (p->cursorSource)
-                obs_source_release(p->cursorSource);
-            free(p->sceneName);
-            free(p);
-        }
-        return;
-    }
-    OBSSourceAutoRelease sceneSrc(obs_get_source_by_name(p->sceneName));
-    if (sceneSrc.Get() && obs_source_is_scene(sceneSrc.Get())) {
-        obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
-        if (scene) {
-            UpdateCursorPosData data;
-            data.cursorSource = p->cursorSource;
-            data.posX = p->posX;
-            data.posY = p->posY;
-            obs_scene_atomic_update(scene, UpdateCursorPosInSceneHelper, &data);
-        }
-    }
-    obs_source_release(p->cursorSource);
-    free(p->sceneName);
-    free(p);
-}
-
-/** Queue cursor position update to run on the graphics thread (avoids main-thread obs_enter_graphics crash). */
-static void queueCursorPositionUpdate(const QString &sceneName, obs_source_t *cursorSource, float sceneX, float sceneY)
-{
-    if (sceneName.isEmpty() || !cursorSource)
-        return;
-    QByteArray nameBytes = sceneName.toUtf8();
-    char *nameCopy = strdup(nameBytes.constData());
-    if (!nameCopy)
-        return;
-    auto *p = static_cast<CursorPosTaskParam *>(malloc(sizeof(CursorPosTaskParam)));
-    if (!p) {
-        free(nameCopy);
-        return;
-    }
-    p->sceneName = nameCopy;
-    p->cursorSource = obs_source_get_ref(cursorSource);
-    p->posX = sceneX;
-    p->posY = sceneY;
-    obs_queue_task(OBS_TASK_GRAPHICS, ApplyCursorPositionTask, p, false);
-}
-
-/** Param for graphics-thread "add/show cursor in scene" task; task frees it. */
-struct AddCursorToSceneTaskParam {
-    char *sceneName = nullptr;
-    obs_source_t *cursorSource = nullptr;
-    bool visible = false;
-    float posX = 0.0f;
-    float posY = 0.0f;
-};
-
-static void AddCursorToSceneTask(void *param)
-{
-    auto *p = static_cast<AddCursorToSceneTaskParam *>(param);
-    if (!p || !p->sceneName || !p->cursorSource) {
-        if (p) {
-            if (p->cursorSource)
-                obs_source_release(p->cursorSource);
-            free(p->sceneName);
-            free(p);
-        }
-        return;
-    }
-    OBSSourceAutoRelease sceneSrc(obs_get_source_by_name(p->sceneName));
-    if (sceneSrc.Get() && obs_source_is_scene(sceneSrc.Get())) {
-        obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
-        if (scene) {
-            AddCursorToSceneData data;
-            data.cursorSource = p->cursorSource;
-            data.visible = p->visible;
-            data.posX = p->posX;
-            data.posY = p->posY;
-            obs_scene_atomic_update(scene, AddOrShowCursorInSceneHelper, &data);
-        }
-    }
-    obs_source_release(p->cursorSource);
-    free(p->sceneName);
-    free(p);
-}
-
-static void queueAddCursorToScene(const QString &sceneName, obs_source_t *cursorSource,
-                                   bool visible, float posX, float posY)
-{
-    if (sceneName.isEmpty() || !cursorSource)
-        return;
-    QByteArray nameBytes = sceneName.toUtf8();
-    char *nameCopy = strdup(nameBytes.constData());
-    if (!nameCopy)
-        return;
-    auto *p = static_cast<AddCursorToSceneTaskParam *>(malloc(sizeof(AddCursorToSceneTaskParam)));
-    if (!p) {
-        free(nameCopy);
-        return;
-    }
-    p->sceneName = nameCopy;
-    p->cursorSource = obs_source_get_ref(cursorSource);
-    p->visible = visible;
-    p->posX = posX;
-    p->posY = posY;
-    obs_queue_task(OBS_TASK_GRAPHICS, AddCursorToSceneTask, p, false);
 }
 
 static void SpawnFxAtClick(const QString &templateSceneName, obs_source_t *mapSceneSource, float x, float y,
@@ -917,11 +695,7 @@ void RPGWindow::fadeOutAndRemoveInstance(const FxInstance &inst, int fadeMs)
         }
     }
 
-    // Clear any direction arrow when this FX is being removed, to avoid stale arrows.
-    if (display)
-        display->clearDirectionArrow();
-    if (setDirectionCheck_)
-        setDirectionCheck_->setChecked(false);
+    releaseFxLockAndClearArrow();
 
     // After fadeMs, actually remove the scene item and FX source.
     QTimer::singleShot(fadeMs, qApp, [inst]() {
@@ -934,44 +708,25 @@ int RPGWindow::findNearestFxInstanceIndex(float sceneX, float sceneY) const
     if (activeFx.empty())
         return -1;
 
-    obs_video_info ovi = {};
-    if (!obs_get_video_info(&ovi) || ovi.base_width == 0 || ovi.base_height == 0)
-        return -1;
-    const float baseW = float(ovi.base_width);
-    const float baseH = float(ovi.base_height);
-
     const float maxRadius = 200.0f; // pixels in canvas space
     const float maxDist2 = maxRadius * maxRadius;
-
     int bestIndex = -1;
     float bestDist2 = maxDist2;
 
     for (size_t i = 0; i < activeFx.size(); ++i) {
         const FxInstance &inst = activeFx[i];
-        if (inst.mapSceneUuid.isEmpty() || inst.sceneItemId == 0)
-            continue;
-
-        OBSSourceAutoRelease mapSrc(obs_get_source_by_uuid(inst.mapSceneUuid.toUtf8().constData()));
-        if (!mapSrc.Get())
-            continue;
-
-        const uint32_t sceneW = obs_source_get_width(mapSrc.Get());
-        const uint32_t sceneH = obs_source_get_height(mapSrc.Get());
-        if (sceneW == 0 || sceneH == 0)
-            continue;
-
-        obs_scene_t *scene = obs_scene_from_source(mapSrc.Get());
-        if (!scene)
-            continue;
-
-        obs_sceneitem_t *item = obs_scene_find_sceneitem_by_id(scene, inst.sceneItemId);
+        obs_sceneitem_t *item = getSceneItemForInstance(inst);
         if (!item)
             continue;
 
         vec2 pos;
         obs_sceneitem_get_pos(item, &pos);
-        const float cx = pos.x * baseW / float(sceneW);
-        const float cy = pos.y * baseH / float(sceneH);
+        OBSSourceAutoRelease mapSrc(obs_get_source_by_uuid(inst.mapSceneUuid.toUtf8().constData()));
+        if (!mapSrc.Get())
+            continue;
+        float cx = 0.0f, cy = 0.0f;
+        if (!scenePosToCanvas(mapSrc.Get(), pos.x, pos.y, cx, cy))
+            continue;
 
         const float dx = cx - sceneX;
         const float dy = cy - sceneY;
@@ -1017,6 +772,104 @@ void RPGWindow::refreshFxListForCurrentMap()
         for (int i = 0; i < fxList->count(); ++i)
             fxList->item(i)->setFlags(fxList->item(i)->flags() | Qt::ItemIsEditable);
     }
+}
+
+bool RPGWindow::sameFx(const FxInstance &a, const FxInstance &b)
+{
+    return a.effectUuid == b.effectUuid && a.sceneItemId == b.sceneItemId;
+}
+
+void RPGWindow::removeFxFromPerMapStore(const FxInstance &inst)
+{
+    auto it = fxByMapSceneUuid_.find(inst.mapSceneUuid);
+    if (it == fxByMapSceneUuid_.end())
+        return;
+    std::vector<FxInstance> &vec = it.value();
+    for (size_t i = 0; i < vec.size(); ++i) {
+        if (sameFx(vec[i], inst)) {
+            vec.erase(vec.begin() + (long)i);
+            break;
+        }
+    }
+}
+
+void RPGWindow::syncStoredLabel(const FxInstance &inst, const QString &newLabel)
+{
+    auto it = fxByMapSceneUuid_.find(inst.mapSceneUuid);
+    if (it == fxByMapSceneUuid_.end())
+        return;
+    for (FxInstance &stored : it.value()) {
+        if (sameFx(stored, inst)) {
+            stored.label = newLabel;
+            break;
+        }
+    }
+}
+
+void RPGWindow::releaseFxLockAndClearArrow()
+{
+    fxLockMode_ = FxLockMode::None;
+    if (setDirectionCheck_)
+        setDirectionCheck_->setChecked(false);
+    if (display)
+        display->clearDirectionArrow();
+}
+
+obs_sceneitem_t *RPGWindow::getSceneItemForInstance(const FxInstance &inst) const
+{
+    if (inst.mapSceneUuid.isEmpty() || inst.sceneItemId == 0)
+        return nullptr;
+    OBSSourceAutoRelease mapSrc(obs_get_source_by_uuid(inst.mapSceneUuid.toUtf8().constData()));
+    if (!mapSrc.Get())
+        return nullptr;
+    obs_scene_t *scene = obs_scene_from_source(mapSrc.Get());
+    if (!scene)
+        return nullptr;
+    return obs_scene_find_sceneitem_by_id(scene, inst.sceneItemId);
+}
+
+bool RPGWindow::canvasToScene(obs_source_t *mapSource, float canvasX, float canvasY,
+                              float &outSceneX, float &outSceneY) const
+{
+    obs_video_info ovi = {};
+    if (!obs_get_video_info(&ovi) || ovi.base_width == 0 || ovi.base_height == 0)
+        return false;
+    const uint32_t sceneW = obs_source_get_width(mapSource);
+    const uint32_t sceneH = obs_source_get_height(mapSource);
+    if (sceneW == 0 || sceneH == 0)
+        return false;
+    outSceneX = canvasX * float(sceneW) / float(ovi.base_width);
+    outSceneY = canvasY * float(sceneH) / float(ovi.base_height);
+    return true;
+}
+
+bool RPGWindow::scenePosToCanvas(obs_source_t *mapSource, float posX, float posY,
+                                float &outCX, float &outCY) const
+{
+    obs_video_info ovi = {};
+    if (!obs_get_video_info(&ovi) || ovi.base_width == 0 || ovi.base_height == 0)
+        return false;
+    const uint32_t baseW = ovi.base_width;
+    const uint32_t baseH = ovi.base_height;
+    const uint32_t sceneW = obs_source_get_width(mapSource);
+    const uint32_t sceneH = obs_source_get_height(mapSource);
+    if (sceneW == 0 || sceneH == 0)
+        return false;
+    outCX = posX * float(baseW) / float(sceneW);
+    outCY = posY * float(baseH) / float(sceneH);
+    return true;
+}
+
+void RPGWindow::clearFxAtRow(int row, int fadeMs)
+{
+    if (row < 0 || row >= (int)activeFx.size() || !fxList)
+        return;
+    const FxInstance &inst = activeFx[static_cast<size_t>(row)];
+    fadeOutAndRemoveInstance(inst, fadeMs);
+    removeFxFromPerMapStore(inst);
+    activeFx.erase(activeFx.begin() + row);
+    delete fxList->takeItem(row);
+    releaseFxLockAndClearArrow();
 }
 
 RPGWindow::RPGWindow()
@@ -1072,11 +925,7 @@ RPGWindow::RPGWindow()
                          display->setSceneByName(sceneName);
                          currentMapSceneUuid_ = getMapSceneUuidFromName(sceneName);
                          refreshFxListForCurrentMap();
-                         fxLockMode_ = FxLockMode::None;
-                         if (setDirectionCheck_)
-                             setDirectionCheck_->setChecked(false);
-                         if (display)
-                             display->clearDirectionArrow();
+                         releaseFxLockAndClearArrow();
                          OBSSourceAutoRelease sceneSrc(
                              obs_get_source_by_name(sceneName.toUtf8().constData()));
                          if (sceneSrc.Get() && obs_source_is_scene(sceneSrc.Get()))
@@ -1118,27 +967,6 @@ RPGWindow::RPGWindow()
     gridOnOutputCheck->setChecked(false);
     gridOnOutputCheck->setToolTip(QStringLiteral("Adds the grid to your selected battlemap scene. Check to show on output, uncheck to hide. After switching battlemaps, uncheck then check again to move the grid to the new scene."));
     tb->addWidget(gridOnOutputCheck);
-
-    tb->addSeparator();
-
-    auto *cursorOnOutputCheck = new QCheckBox("Cursor on output", this);
-    cursorOnOutputCheck->setChecked(false);
-    cursorOnOutputCheck->setToolTip(QStringLiteral("Shows a dot cursor on the battlemap that follows the mouse. Uses Screen blend. Size and color below."));
-    tb->addWidget(cursorOnOutputCheck);
-
-    auto *cursorSizeSpin = new QSpinBox(this);
-    cursorSizeSpin->setRange(8, 64);
-    cursorSizeSpin->setValue(24);
-    cursorSizeSpin->setSuffix(" px");
-    tb->addWidget(new QLabel("Size:", this));
-    tb->addWidget(cursorSizeSpin);
-
-    auto *cursorColorBtn = new QToolButton(this);
-    cursorColorBtn->setIcon(iconFromColor(cursorColor_));
-    cursorColorBtn->setToolTip("Cursor color");
-    cursorColorBtn->setFixedSize(kToolButtonSize, kToolButtonSize);
-    cursorColorBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    tb->addWidget(cursorColorBtn);
 
     tb->addSeparator();
 
@@ -1222,118 +1050,12 @@ RPGWindow::RPGWindow()
         }
     });
 
-    // Cursor on output: add to scene (with delay to avoid crash), live position via timer.
-    auto colorToArgb = [](const QColor &c) -> uint32_t {
-        return (uint32_t(c.alpha()) << 24) | (uint32_t(c.red()) << 16) | (uint32_t(c.green()) << 8) | uint32_t(c.blue());
-    };
-    auto syncCursorOutput = [this, cursorOnOutputCheck, cursorSizeSpin, colorToArgb]() {
-        if (!cursorOnOutputCheck->isChecked())
-            return;
-        ensureCursorSource();
-        if (cursorSource_.Get()) {
-            updateCursorSourceSettings(cursorSource_.Get(), cursorSizeSpin->value(), cursorColor_);
-            float cx = lastCursorX;
-            float cy = lastCursorY;
-            if (cx == 0.0f && cy == 0.0f) {
-                obs_video_info ovi = {};
-                if (obs_get_video_info(&ovi) && ovi.base_width > 0 && ovi.base_height > 0) {
-                    cx = float(ovi.base_width) * 0.5f;
-                    cy = float(ovi.base_height) * 0.5f;
-                }
-            }
-            syncCursorToScene(sceneCombo_->currentText(), true, cx, cy);
-        }
-    };
-
-    QObject::connect(cursorOnOutputCheck, &QCheckBox::toggled, this,
-                     [this, cursorOnOutputCheck, cursorSizeSpin, colorToArgb, syncCursorOutput](bool checked) {
-                         const QString sceneName = sceneCombo_->currentText();
-                         if (cursorUpdateTimer_)
-                             cursorUpdateTimer_->stop();
-                         if (!checked) {
-                             syncCursorToScene(sceneName, false, 0.0f, 0.0f);
-                             if (display)
-                                 display->setCursorOverlay(false, 0.0f, 0.0f);
-                             return;
-                         }
-                         ensureCursorSource();
-                         if (!cursorSource_.Get())
-                             return;
-                         updateCursorSourceSettings(cursorSource_.Get(), cursorSizeSpin->value(), cursorColor_);
-                         float cx = lastCursorX;
-                         float cy = lastCursorY;
-                         if (cx == 0.0f && cy == 0.0f) {
-                             obs_video_info ovi = {};
-                             if (obs_get_video_info(&ovi) && ovi.base_width > 0 && ovi.base_height > 0) {
-                                 cx = float(ovi.base_width) * 0.5f;
-                                 cy = float(ovi.base_height) * 0.5f;
-                             }
-                         }
-                         if (display) {
-                             display->setCursorOverlayStyle(cursorSizeSpin->value(), colorToArgb(cursorColor_));
-                             display->setCursorOverlay(true, cx, cy);
-                         }
-                         lastCursorX = cx;
-                         lastCursorY = cy;
-                         // Add cursor to scene after delay to avoid add-during-render crash.
-                         QTimer::singleShot(500, this, [this, sceneName, cx, cy]() {
-                             if (!cursorSource_.Get())
-                                 return;
-                             syncCursorToScene(sceneName, true, lastCursorX, lastCursorY);
-                         });
-                         if (!cursorUpdateTimer_) {
-                             cursorUpdateTimer_ = new QTimer(this);
-                             cursorUpdateTimer_->setSingleShot(false);
-                             QObject::connect(cursorUpdateTimer_, &QTimer::timeout, this, [this, cursorOnOutputCheck]() {
-                                 if (!cursorOnOutputCheck->isChecked() || !cursorSource_.Get())
-                                     return;
-                                 updateCursorPosition(sceneCombo_->currentText(), lastCursorX, lastCursorY);
-                                 if (display)
-                                     display->setCursorOverlay(true, lastCursorX, lastCursorY);
-                             });
-                         }
-                         cursorUpdateTimer_->start(33);
-                     });
-
-    QObject::connect(cursorSizeSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
-                     [syncCursorOutput](int) { syncCursorOutput(); });
-    QObject::connect(cursorColorBtn, &QAbstractButton::clicked, this, [this, cursorColorBtn, cursorOnOutputCheck, cursorSizeSpin, syncCursorOutput]() {
-        QColor chosen = QColorDialog::getColor(cursorColor_, this, "Choose cursor color");
-        if (chosen.isValid()) {
-            cursorColor_ = chosen;
-            cursorColorBtn->setIcon(iconFromColor(chosen));
-            syncCursorOutput();
-        }
-    });
-
-    // Convert effect position from scene space to canvas (base) space for display/arrow.
-    auto scenePosToCanvas = [](obs_source_t *mapSceneSource, float posX, float posY, float &outCX, float &outCY) -> bool {
-        obs_video_info ovi = {};
-        if (!obs_get_video_info(&ovi) || ovi.base_width == 0 || ovi.base_height == 0)
-            return false;
-        const uint32_t baseW = ovi.base_width;
-        const uint32_t baseH = ovi.base_height;
-        const uint32_t sceneW = obs_source_get_width(mapSceneSource);
-        const uint32_t sceneH = obs_source_get_height(mapSceneSource);
-        if (sceneW == 0 || sceneH == 0)
-            return false;
-        outCX = posX * float(baseW) / float(sceneW);
-        outCY = posY * float(baseH) / float(sceneH);
-        return true;
-    };
-
     QObject::connect(display, &OBSDisplayWidget::sceneMouseMoved, this,
-                     [this, cursorOnOutputCheck, mouseLabel, gridCheck, gridCellSpin, scenePosToCanvas](float x, float y,
-                                                                                                        float nx,
-                                                                                                        float ny,
-                                                                                                        bool inside,
-                                                                                                        bool leftButtonDown) {
-                         if (cursorOnOutputCheck->isChecked()) {
-                             lastCursorX = x;
-                             lastCursorY = y;
-                             if (display)
-                                 display->setCursorOverlay(true, x, y);
-                         }
+                     [this, mouseLabel, gridCheck, gridCellSpin](float x, float y,
+                                                                 float nx,
+                                                                 float ny,
+                                                                 bool inside,
+                                                                 bool leftButtonDown) {
                          // Live mouse tracking in status bar (similar to click/grid readout).
                          {
                              QString text;
@@ -1368,22 +1090,15 @@ RPGWindow::RPGWindow()
                              const int row = fxList->currentRow();
                              if (row >= 0 && row < (int)activeFx.size()) {
                                  const FxInstance &inst = activeFx[static_cast<size_t>(row)];
-                                 OBSSourceAutoRelease mapSrc(obs_get_source_by_uuid(inst.mapSceneUuid.toUtf8().constData()));
-                                 if (mapSrc.Get()) {
-                                     obs_scene_t *scene = obs_scene_from_source(mapSrc.Get());
-                                     obs_sceneitem_t *item = scene ? obs_scene_find_sceneitem_by_id(scene, inst.sceneItemId) : nullptr;
-                                     if (item) {
-                                         obs_video_info ovi = {};
-                                         if (obs_get_video_info(&ovi) && ovi.base_width > 0 && ovi.base_height > 0) {
-                                             const uint32_t sceneW = obs_source_get_width(mapSrc.Get());
-                                             const uint32_t sceneH = obs_source_get_height(mapSrc.Get());
-                                             if (sceneW > 0 && sceneH > 0) {
-                                                 const float sceneX = x * float(sceneW) / float(ovi.base_width);
-                                                 const float sceneY = y * float(sceneH) / float(ovi.base_height);
-                                                 struct vec2 pos;
-                                                 vec2_set(&pos, sceneX, sceneY);
-                                                 obs_sceneitem_set_pos(item, &pos);
-                                             }
+                                 obs_sceneitem_t *item = getSceneItemForInstance(inst);
+                                 if (item) {
+                                     OBSSourceAutoRelease mapSrc(obs_get_source_by_uuid(inst.mapSceneUuid.toUtf8().constData()));
+                                     if (mapSrc.Get()) {
+                                         float sceneX = 0.0f, sceneY = 0.0f;
+                                         if (canvasToScene(mapSrc.Get(), x, y, sceneX, sceneY)) {
+                                             struct vec2 pos;
+                                             vec2_set(&pos, sceneX, sceneY);
+                                             obs_sceneitem_set_pos(item, &pos);
                                          }
                                      }
                                  }
@@ -1408,21 +1123,18 @@ RPGWindow::RPGWindow()
                          }
 
                          const FxInstance &inst = activeFx[static_cast<size_t>(row)];
+                         obs_sceneitem_t *item = getSceneItemForInstance(inst);
+                         if (!item) {
+                             display->clearDirectionArrow();
+                             return;
+                         }
+                         struct vec2 pos;
+                         obs_sceneitem_get_pos(item, &pos);
                          OBSSourceAutoRelease mapSrc(obs_get_source_by_uuid(inst.mapSceneUuid.toUtf8().constData()));
                          if (!mapSrc.Get()) {
                              display->clearDirectionArrow();
                              return;
                          }
-
-                         obs_scene_t *scene = obs_scene_from_source(mapSrc.Get());
-                         obs_sceneitem_t *item = scene ? obs_scene_find_sceneitem_by_id(scene, inst.sceneItemId) : nullptr;
-                         if (!item) {
-                             display->clearDirectionArrow();
-                             return;
-                         }
-
-                         struct vec2 pos;
-                         obs_sceneitem_get_pos(item, &pos);
                          float cx = 0.0f, cy = 0.0f;
                          if (!scenePosToCanvas(mapSrc.Get(), pos.x, pos.y, cx, cy)) {
                              display->clearDirectionArrow();
@@ -1439,20 +1151,15 @@ RPGWindow::RPGWindow()
 
     // Left-click release: exit move/rotate lock.
     QObject::connect(display, &OBSDisplayWidget::sceneLeftReleased, this, [this]() {
-                         if (fxLockMode_ != FxLockMode::None) {
-                             fxLockMode_ = FxLockMode::None;
-                             if (setDirectionCheck_)
-                                 setDirectionCheck_->setChecked(false);
-                             if (display)
-                                 display->clearDirectionArrow();
-                         }
+                         if (fxLockMode_ != FxLockMode::None)
+                             releaseFxLockAndClearArrow();
                      });
 
     setDirectionCheck_ = new QCheckBox("Set direction", this);
     setDirectionCheck_->setChecked(false);
     setDirectionCheck_->setToolTip(QStringLiteral("Check this, then click on the map to set the selected effect's facing direction. Arrow shows current facing (default: up)."));
     tb->addWidget(setDirectionCheck_);
-    QObject::connect(setDirectionCheck_, &QCheckBox::toggled, this, [this, scenePosToCanvas](bool checked) {
+    QObject::connect(setDirectionCheck_, &QCheckBox::toggled, this, [this](bool checked) {
         if (!display)
             return;
         if (!checked) {
@@ -1465,10 +1172,9 @@ RPGWindow::RPGWindow()
     tb->addSeparator();
 
     QObject::connect(display, &OBSDisplayWidget::sceneClicked, this,
-                     [this, clickLabel, gridCheck, gridCellSpin, scenePosToCanvas](float x, float y, float nx, float ny,
-                                                                                   bool inside) {
+                     [this, clickLabel, gridCheck, gridCellSpin](float x, float y, float nx, float ny,
+                                                                bool inside) {
                          // Clear any previous direction arrow on new press so we never accumulate arrows.
-                         // (Mouse release may not be delivered on macOS with native surface, so clear on press too.)
                          if (display)
                              display->clearDirectionArrow();
 
@@ -1477,23 +1183,20 @@ RPGWindow::RPGWindow()
                              const int row = fxList->currentRow();
                              if (row >= 0 && row < (int)activeFx.size()) {
                                  const FxInstance &inst = activeFx[static_cast<size_t>(row)];
-                                 OBSSourceAutoRelease mapSrc(obs_get_source_by_uuid(inst.mapSceneUuid.toUtf8().constData()));
-                                 if (mapSrc.Get()) {
-                                     obs_scene_t *scene = obs_scene_from_source(mapSrc.Get());
-                                     obs_sceneitem_t *item = scene ? obs_scene_find_sceneitem_by_id(scene, inst.sceneItemId) : nullptr;
-                                     if (item) {
-                                         struct vec2 pos;
-                                         obs_sceneitem_get_pos(item, &pos);
+                                 obs_sceneitem_t *item = getSceneItemForInstance(inst);
+                                 if (item) {
+                                     struct vec2 pos;
+                                     obs_sceneitem_get_pos(item, &pos);
+                                     OBSSourceAutoRelease mapSrc(obs_get_source_by_uuid(inst.mapSceneUuid.toUtf8().constData()));
+                                     if (mapSrc.Get()) {
                                          float cx = 0.0f, cy = 0.0f;
                                          if (scenePosToCanvas(mapSrc.Get(), pos.x, pos.y, cx, cy)) {
-                                             // Angle from entity to click: 0 = right, -90 = up (our default facing).
                                              const float dx = x - cx;
                                              const float dy = y - cy;
                                              const float angleRad = std::atan2(dy, dx);
                                              const float angleDeg = angleRad * (180.0f / 3.14159265f);
                                              obs_sceneitem_set_rot(item, angleDeg);
                                          }
-                                         // Keep rotate mode on; arrow will update on next mouse move.
                                      }
                                  }
                              }
@@ -1714,27 +1417,7 @@ RPGWindow::RPGWindow()
                          auto *dupAct = menu.addAction("Duplicate as template");
                          QAction *chosen = menu.exec(fxList->mapToGlobal(pos));
                          if (chosen == clearAct) {
-                             const int fadeMs = fadeSpin ? fadeSpin->value() : 600;
-                             const FxInstance &inst = activeFx[static_cast<size_t>(row)];
-                             fadeOutAndRemoveInstance(inst, fadeMs);
-                             auto it = fxByMapSceneUuid_.find(inst.mapSceneUuid);
-                             if (it != fxByMapSceneUuid_.end()) {
-                                 std::vector<FxInstance> &vec = it.value();
-                                 for (size_t i = 0; i < vec.size(); ++i) {
-                                     if (vec[i].effectUuid == inst.effectUuid && vec[i].sceneItemId == inst.sceneItemId) {
-                                         vec.erase(vec.begin() + (long)i);
-                                         break;
-                                     }
-                                 }
-                             }
-                             activeFx.erase(activeFx.begin() + row);
-                             delete fxList->takeItem(row);
-
-                             fxLockMode_ = FxLockMode::None;
-                             if (display)
-                                 display->clearDirectionArrow();
-                             if (setDirectionCheck_)
-                                 setDirectionCheck_->setChecked(false);
+                             clearFxAtRow(row, fadeSpin ? fadeSpin->value() : 600);
                          } else if (chosen == dupAct) {
                              const FxInstance &inst = activeFx[static_cast<size_t>(row)];
                              OBSSourceAutoRelease fxSrc(obs_get_source_by_uuid(inst.effectUuid.toUtf8().constData()));
@@ -1770,63 +1453,50 @@ RPGWindow::RPGWindow()
                          }
                      });
 
-    // Right-click on map: if over an FX, show context menu (Move / Rotate / Clear). Lock until left-click for Move/Rotate.
+    // Right-click on map: over FX → Move / Rotate / Clear. Over empty → no actions.
     QObject::connect(display, &OBSDisplayWidget::sceneRightClicked, this,
                      [this, fadeSpin](float sceneX, float sceneY, float, float, bool inside) {
-                         if (!inside || !fxList)
+                         if (!inside)
                              return;
                          const int idx = findNearestFxInstanceIndex(sceneX, sceneY);
-                         if (idx < 0 || idx >= fxList->count())
-                             return;
-                         fxList->setCurrentRow(idx);
-                         const int row = idx;
+                         const bool overFx = (idx >= 0 && fxList && idx < fxList->count());
+                         if (overFx) {
+                             fxList->setCurrentRow(idx);
+                         }
                          QMenu menu(this);
-                         QAction *moveAct = menu.addAction(QStringLiteral("Move"));
-                         QAction *rotateAct = menu.addAction(QStringLiteral("Rotate"));
-                         QAction *clearAct = menu.addAction(QStringLiteral("Clear"));
+                         QAction *moveAct = nullptr;
+                         QAction *rotateAct = nullptr;
+                         QAction *clearAct = nullptr;
+                         if (overFx) {
+                             moveAct = menu.addAction(QStringLiteral("Move"));
+                             rotateAct = menu.addAction(QStringLiteral("Rotate"));
+                             clearAct = menu.addAction(QStringLiteral("Clear"));
+                         }
                          QAction *chosen = menu.exec(QCursor::pos());
-                         if (chosen == clearAct) {
-                             const int fadeMs = fadeSpin ? fadeSpin->value() : 600;
-                             const FxInstance &inst = activeFx[static_cast<size_t>(row)];
-                             fadeOutAndRemoveInstance(inst, fadeMs);
-                             auto it = fxByMapSceneUuid_.find(inst.mapSceneUuid);
-                             if (it != fxByMapSceneUuid_.end()) {
-                                 std::vector<FxInstance> &vec = it.value();
-                                 for (size_t i = 0; i < vec.size(); ++i) {
-                                     if (vec[i].effectUuid == inst.effectUuid && vec[i].sceneItemId == inst.sceneItemId) {
-                                         vec.erase(vec.begin() + (long)i);
-                                         break;
-                                     }
-                                 }
+                         if (overFx) {
+                             const int row = idx;
+                             if (chosen == clearAct) {
+                                 clearFxAtRow(row, fadeSpin ? fadeSpin->value() : 600);
+                             } else if (chosen == moveAct) {
+                                 fxLockMode_ = FxLockMode::Move;
+                                 if (setDirectionCheck_)
+                                     setDirectionCheck_->setChecked(false);
+                                 if (display)
+                                     display->clearDirectionArrow();
+                             } else if (chosen == rotateAct) {
+                                 fxLockMode_ = FxLockMode::Rotate;
+                                 if (setDirectionCheck_)
+                                     setDirectionCheck_->setChecked(true);
                              }
-                             activeFx.erase(activeFx.begin() + row);
-                             delete fxList->takeItem(row);
-                             fxLockMode_ = FxLockMode::None;
-                             if (display)
-                                 display->clearDirectionArrow();
-                             if (setDirectionCheck_)
-                                 setDirectionCheck_->setChecked(false);
-                         } else if (chosen == moveAct) {
-                             fxLockMode_ = FxLockMode::Move;
-                             if (setDirectionCheck_)
-                                 setDirectionCheck_->setChecked(false);
-                             if (display)
-                                 display->clearDirectionArrow();
-                         } else if (chosen == rotateAct) {
-                             fxLockMode_ = FxLockMode::Rotate;
-                             if (setDirectionCheck_)
-                                 setDirectionCheck_->setChecked(true);
                          }
                      });
 
-    QObject::connect(fxList, &QListWidget::currentRowChanged, this, [this, scenePosToCanvas](int row) {
+    QObject::connect(fxList, &QListWidget::currentRowChanged, this, [this](int row) {
         if (!labelEdit)
             return;
         if (row < 0 || row >= (int)activeFx.size()) {
             labelEdit->clear();
-            fxLockMode_ = FxLockMode::None;
-            if (display)
-                display->clearDirectionArrow();
+            releaseFxLockAndClearArrow();
             return;
         }
         labelEdit->setText(activeFx[static_cast<size_t>(row)].label);
@@ -1848,15 +1518,7 @@ RPGWindow::RPGWindow()
         FxInstance &inst = activeFx[static_cast<size_t>(row)];
         const QString newLabel = item->text().trimmed();
         inst.label = newLabel;
-        auto itMap = fxByMapSceneUuid_.find(inst.mapSceneUuid);
-        if (itMap != fxByMapSceneUuid_.end()) {
-            for (FxInstance &stored : itMap.value()) {
-                if (stored.effectUuid == inst.effectUuid && stored.sceneItemId == inst.sceneItemId) {
-                    stored.label = newLabel;
-                    break;
-                }
-            }
-        }
+        syncStoredLabel(inst, newLabel);
         if (labelEdit && fxList->currentRow() == row)
             labelEdit->setText(newLabel);
 
@@ -1921,11 +1583,8 @@ RPGWindow::RPGWindow()
 
     refreshLists();
 
-    // Ensure grid and cursor image sources exist for output overlays.
-    QTimer::singleShot(0, this, [this]() {
-        ensureGridSource();
-        ensureCursorSource();
-    });
+    // Ensure grid image source exists for output overlay.
+    QTimer::singleShot(0, this, [this]() { ensureGridSource(); });
 
     QObject::connect(refreshBtn, &QAbstractButton::clicked, this, [refreshLists]() { refreshLists(); });
 
@@ -2012,15 +1671,15 @@ RPGWindow::RPGWindow()
                         return;
                     std::vector<FxInstance> &vec = it.value();
                     for (size_t i = 0; i < vec.size(); ++i) {
-                        if (vec[i].effectUuid == inst.effectUuid && vec[i].sceneItemId == inst.sceneItemId) {
+                        if (sameFx(vec[i], inst)) {
                             fadeOutAndRemoveInstance(vec[i], fadeMs);
-                            vec.erase(vec.begin() + (long)i);
+                            removeFxFromPerMapStore(inst);
                             if (inst.mapSceneUuid == currentMapSceneUuid_) {
                                 for (size_t j = 0; j < activeFx.size(); ++j) {
-                                    if (activeFx[j].effectUuid == inst.effectUuid &&
-                                        activeFx[j].sceneItemId == inst.sceneItemId) {
+                                    if (sameFx(activeFx[j], inst)) {
                                         activeFx.erase(activeFx.begin() + (long)j);
-                                        delete fxList->takeItem((int)j);
+                                        if (fxList)
+                                            delete fxList->takeItem((int)j);
                                         break;
                                     }
                                 }
@@ -2042,12 +1701,7 @@ RPGWindow::RPGWindow()
             fxByMapSceneUuid_.remove(currentMapSceneUuid_);
         activeFx.clear();
         fxList->clear();
-
-        fxLockMode_ = FxLockMode::None;
-        if (display)
-            display->clearDirectionArrow();
-        if (setDirectionCheck_)
-            setDirectionCheck_->setChecked(false);
+        releaseFxLockAndClearArrow();
     });
 
     QObject::connect(dupAsTemplateBtn, &QAbstractButton::clicked, this,
@@ -2122,16 +1776,7 @@ RPGWindow::RPGWindow()
         FxInstance &inst = activeFx[static_cast<size_t>(row)];
         const QString newLabel = labelEdit->text().trimmed();
         inst.label = newLabel;
-        // Keep per-map store in sync so label persists when switching maps.
-        auto it = fxByMapSceneUuid_.find(inst.mapSceneUuid);
-        if (it != fxByMapSceneUuid_.end()) {
-            for (FxInstance &stored : it.value()) {
-                if (stored.effectUuid == inst.effectUuid && stored.sceneItemId == inst.sceneItemId) {
-                    stored.label = newLabel;
-                    break;
-                }
-            }
-        }
+        syncStoredLabel(inst, newLabel);
 
         // Update text and color of any FX Label source inside this FX scene instance.
         struct LabelUpdateEdit {
@@ -2252,106 +1897,9 @@ void RPGWindow::syncGridOutputToScene(const QString &sceneName, bool showOnOutpu
     }
 }
 
-OBSSource RPGWindow::ensureCursorSource()
-{
-    if (cursorSource_.Get())
-        return cursorSource_;
-
-    obs_source_t *existing = obs_get_source_by_name(kCursorSourceName);
-    if (existing) {
-        cursorSource_ = OBSSource(existing);
-        obs_source_release(existing);
-        return cursorSource_;
-    }
-
-    const QString path = GetCursorPngPath();
-    if (!GenerateCursorPng(path, 24, Qt::white))
-        return cursorSource_;
-
-    obs_data_t *settings = obs_data_create();
-    obs_data_set_string(settings, "file", path.toUtf8().constData());
-    obs_data_set_bool(settings, "unload", false);
-
-    obs_source_t *src = obs_source_create("image_source", kCursorSourceName, settings, nullptr);
-    obs_data_release(settings);
-    if (src)
-        cursorSource_ = OBSSource(src);
-    return cursorSource_;
-}
-
-void RPGWindow::updateCursorSourceSettings(obs_source_t *cursorSource, int sizePx, const QColor &color)
-{
-    if (!cursorSource)
-        return;
-
-    const QString path = GetCursorPngPath();
-    if (!GenerateCursorPng(path, sizePx, color))
-        return;
-
-    obs_data_t *settings = obs_source_get_settings(cursorSource);
-    if (!settings)
-        return;
-    obs_data_set_string(settings, "file", path.toUtf8().constData());
-    obs_source_update(cursorSource, settings);
-    obs_data_release(settings);
-}
-
-void RPGWindow::syncCursorToScene(const QString &sceneName, bool showCursor, float cursorX, float cursorY)
-{
-    if (!cursorSource_.Get() || sceneName.isEmpty())
-        return;
-
-    OBSSourceAutoRelease sceneSrc(obs_get_source_by_name(sceneName.toUtf8().constData()));
-    if (!sceneSrc.Get() || !obs_source_is_scene(sceneSrc.Get()))
-        return;
-
-    // cursorX, cursorY are in canvas space; scene item position is in scene space
-    float posX = cursorX;
-    float posY = cursorY;
-    obs_video_info ovi = {};
-    if (obs_get_video_info(&ovi) && ovi.base_width > 0 && ovi.base_height > 0) {
-        const uint32_t sceneW = obs_source_get_width(sceneSrc.Get());
-        const uint32_t sceneH = obs_source_get_height(sceneSrc.Get());
-        if (sceneW > 0 && sceneH > 0) {
-            posX = cursorX * float(sceneW) / float(ovi.base_width);
-            posY = cursorY * float(sceneH) / float(ovi.base_height);
-        }
-    }
-
-    queueAddCursorToScene(sceneName, cursorSource_.Get(), showCursor, posX, posY);
-}
-
-void RPGWindow::updateCursorPosition(const QString &sceneName, float x, float y)
-{
-    if (!cursorSource_.Get() || sceneName.isEmpty())
-        return;
-
-    lastCursorX = x;
-    lastCursorY = y;
-
-    OBSSourceAutoRelease sceneSrc(obs_get_source_by_name(sceneName.toUtf8().constData()));
-    if (!sceneSrc.Get() || !obs_source_is_scene(sceneSrc.Get()))
-        return;
-
-    // x,y are in canvas (base) space; cursor scene item position is in scene space
-    obs_video_info ovi = {};
-    if (!obs_get_video_info(&ovi) || ovi.base_width == 0 || ovi.base_height == 0)
-        return;
-    const uint32_t sceneW = obs_source_get_width(sceneSrc.Get());
-    const uint32_t sceneH = obs_source_get_height(sceneSrc.Get());
-    if (sceneW == 0 || sceneH == 0)
-        return;
-    const float sx = x * float(sceneW) / float(ovi.base_width);
-    const float sy = y * float(sceneH) / float(ovi.base_height);
-
-    queueCursorPositionUpdate(sceneName, cursorSource_.Get(), sx, sy);
-}
-
 RPGWindow::~RPGWindow()
 {
-    /* Remove grid and cursor from all scenes so OBS can clear scene data cleanly on exit. */
+    /* Remove grid from all scenes so OBS can clear scene data cleanly on exit. */
     if (gridSource_.Get())
         removeSourceFromAllScenes(gridSource_.Get());
-    if (cursorSource_.Get())
-        removeSourceFromAllScenes(cursorSource_.Get());
 }

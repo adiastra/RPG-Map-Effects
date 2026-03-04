@@ -25,11 +25,6 @@ private:
     void updateGridSourceSettings(obs_source_t *gridSource, int cellSize, int lineWidth, const QColor &color);
     void syncGridOutputToScene(const QString &sceneName, bool showOnOutput);
 
-    OBSSource ensureCursorSource();
-    void updateCursorSourceSettings(obs_source_t *cursorSource, int sizePx, const QColor &color);
-    void syncCursorToScene(const QString &sceneName, bool showCursor, float cursorX, float cursorY);
-    void updateCursorPosition(const QString &sceneName, float x, float y);
-
     struct FxInstance {
         QString mapSceneUuid;
         QString effectUuid;
@@ -37,12 +32,12 @@ private:
         QString label;        // user-visible label text on the map
         QString templateName; // template scene name used for this instance
     };
+    static bool sameFx(const FxInstance &a, const FxInstance &b);
 
 private:
     OBSDisplayWidget *display = nullptr;
 
     QColor labelColor_ = Qt::white;
-    QColor cursorColor_ = Qt::white;
 
     float lastClickX = 0.0f;
     float lastClickY = 0.0f;
@@ -64,12 +59,6 @@ private:
     QCheckBox *setDirectionCheck_ = nullptr;
 
     OBSSource gridSource_;
-    OBSSource cursorSource_;
-
-    float lastCursorX = 0.0f;
-    float lastCursorY = 0.0f;
-
-    QTimer *cursorUpdateTimer_ = nullptr;
 
     void fadeOutAndRemoveInstance(const FxInstance &inst, int fadeMs);
     int findNearestFxInstanceIndex(float sceneX, float sceneY) const;
@@ -77,4 +66,18 @@ private:
     QString getMapSceneUuidFromName(const QString &sceneName) const;
     /** Reload activeFx and fxList from fxByMapSceneUuid_ for the current map. */
     void refreshFxListForCurrentMap();
+    /** Remove the given FX from fxByMapSceneUuid_ (by effectUuid + sceneItemId). */
+    void removeFxFromPerMapStore(const FxInstance &inst);
+    /** Update the stored copy of this FX's label in fxByMapSceneUuid_. */
+    void syncStoredLabel(const FxInstance &inst, const QString &newLabel);
+    /** Clear lock, arrow, and Set direction checkbox. */
+    void releaseFxLockAndClearArrow();
+    /** Get scene item for this instance (non-owning; do not use after scene changes). */
+    obs_sceneitem_t *getSceneItemForInstance(const FxInstance &inst) const;
+    /** Convert canvas (base) coords to scene space. Returns false if sizes invalid. */
+    bool canvasToScene(obs_source_t *mapSource, float canvasX, float canvasY, float &outSceneX, float &outSceneY) const;
+    /** Convert scene position to canvas (base) space. Returns false if sizes invalid. */
+    bool scenePosToCanvas(obs_source_t *mapSource, float posX, float posY, float &outCX, float &outCY) const;
+    /** Clear the FX at the given list row: fade out, remove from store/list, release lock. */
+    void clearFxAtRow(int row, int fadeMs);
 };

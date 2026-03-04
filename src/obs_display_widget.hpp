@@ -34,10 +34,6 @@ public:
     void setDirectionArrow(float fromX, float fromY, float toX, float toY);
     void clearDirectionArrow();
 
-    /** Cursor overlay (preview only): show a dot at canvas position. Avoids adding cursor to scene (crash). */
-    void setCursorOverlay(bool show, float canvasX, float canvasY);
-    void setCursorOverlayStyle(int sizePx, uint32_t colorArgb);
-
     /** Convert canvas (scene) coordinates to widget coordinates for overlay drawing. */
     bool canvasToWidget(float canvasX, float canvasY, int widgetW, int widgetH,
                         int &outX, int &outY) const;
@@ -86,13 +82,6 @@ private:
     float directionArrowToY_ = 0.0f;
 
     ArrowOverlay *arrowOverlay_ = nullptr;
-
-    mutable std::mutex cursorOverlayMutex_;
-    bool cursorOverlayShow_ = false;
-    float cursorOverlayX_ = 0.0f;
-    float cursorOverlayY_ = 0.0f;
-    int cursorOverlaySizePx_ = 16;
-    uint32_t cursorOverlayColorArgb_ = 0xFFFFFFFFu;
 
     QTimer *mousePollTimer_ = nullptr;
     bool mouseLeftDown_ = false;

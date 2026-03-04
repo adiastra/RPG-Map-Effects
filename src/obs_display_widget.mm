@@ -189,24 +189,6 @@ void OBSDisplayWidget::clearDirectionArrow()
         arrowOverlay_->update();
 }
 
-void OBSDisplayWidget::setCursorOverlay(bool show, float canvasX, float canvasY)
-{
-    {
-        std::lock_guard<std::mutex> lock(cursorOverlayMutex_);
-        cursorOverlayShow_ = show;
-        cursorOverlayX_ = canvasX;
-        cursorOverlayY_ = canvasY;
-    }
-    update();
-}
-
-void OBSDisplayWidget::setCursorOverlayStyle(int sizePx, uint32_t colorArgb)
-{
-    std::lock_guard<std::mutex> lock(cursorOverlayMutex_);
-    cursorOverlaySizePx_ = (sizePx < 4) ? 4 : ((sizePx > 128) ? 128 : sizePx);
-    cursorOverlayColorArgb_ = colorArgb;
-}
-
 bool OBSDisplayWidget::getDirectionArrow(float &fromX, float &fromY, float &toX, float &toY) const
 {
     std::lock_guard<std::mutex> lock(directionArrowMutex_);
@@ -510,44 +492,6 @@ void OBSDisplayWidget::DrawCallback(void *data, uint32_t cx, uint32_t cy)
                     gs_draw(GS_TRIS, 0, 0);
             }
             gs_vertexbuffer_destroy(vb);
-        }
-    }
-
-    // Cursor overlay (preview only): dot at cursor position
-    {
-        bool show = false;
-        float cx = 0.0f, cy = 0.0f;
-        int sizePx = 16;
-        uint32_t colorArgb = 0xFFFFFFFFu;
-        {
-            std::lock_guard<std::mutex> lock(self->cursorOverlayMutex_);
-            show = self->cursorOverlayShow_;
-            if (show) {
-                cx = self->cursorOverlayX_;
-                cy = self->cursorOverlayY_;
-                sizePx = self->cursorOverlaySizePx_;
-                colorArgb = self->cursorOverlayColorArgb_;
-            }
-        }
-        if (show && sizePx > 0) {
-            const float half = float(sizePx) * 0.5f;
-            gs_render_start(true);
-            gs_vertex2f(cx - half, cy - half);
-            gs_vertex2f(cx + half, cy - half);
-            gs_vertex2f(cx + half, cy + half);
-            gs_vertex2f(cx - half, cy - half);
-            gs_vertex2f(cx + half, cy + half);
-            gs_vertex2f(cx - half, cy + half);
-            gs_vertbuffer_t *vb = gs_render_save();
-            if (vb) {
-                gs_load_vertexbuffer(vb);
-                gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
-                gs_eparam_t *colorParam = gs_effect_get_param_by_name(solid, "color");
-                gs_effect_set_color(colorParam, colorArgb);
-                while (gs_effect_loop(solid, "Solid"))
-                    gs_draw(GS_TRIS, 0, 6);
-                gs_vertexbuffer_destroy(vb);
-            }
         }
     }
 
