@@ -1,29 +1,43 @@
-cmake_minimum_required(VERSION 3.22...3.30)
+# Standalone build using OBS plugin template.
+# See https://github.com/obsproject/obs-plugintemplate
+cmake_minimum_required(VERSION 3.28...3.30)
 
-# This plugin CMakeLists is intended to be built *inside* the OBS Studio source tree
-# (i.e. added under obs-studio/plugins/ and referenced from obs-studio/plugins/CMakeLists.txt).
-#
-# It relies on OBS Studio's CMake helpers/targets such as:
-#   - OBS::libobs
-#   - OBS::frontend-api
-#   - Qt6::Widgets
-#   - set_target_properties_obs()
-#   - legacy_check() (optional, safe if present)
-#
-# If you see errors about those, you are likely trying to build this standalone.
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake" NO_POLICY_SCOPE)
 
-project(rpg-map-effects LANGUAGES C CXX)
+project(${_name} VERSION ${_version} LANGUAGES C CXX OBJC OBJCXX)
 
-find_package(Python3 REQUIRED)
+option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" ON)
+option(ENABLE_QT "Use Qt functionality" ON)
 
-if (COMMAND legacy_check)
-  legacy_check()
+include(compilerconfig)
+include(defaults)
+include(helpers)
+
+add_library(${CMAKE_PROJECT_NAME} MODULE)
+
+find_package(libobs REQUIRED)
+target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs)
+
+if(ENABLE_FRONTEND_API)
+  find_package(obs-frontend-api REQUIRED)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
 endif()
 
-add_library(rpg-map-effects MODULE)
-add_library(OBS::rpg-map-effects ALIAS rpg-map-effects)
+if(ENABLE_QT)
+  find_package(Qt6 COMPONENTS Widgets Core REQUIRED)
+  target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Widgets)
+  target_compile_options(
+    ${CMAKE_PROJECT_NAME}
+    PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,AppleClang,Clang>:-Wno-quoted-include-in-framework-header -Wno-comma>
+  )
+  set_target_properties(
+    ${CMAKE_PROJECT_NAME}
+    PROPERTIES AUTOMOC ON AUTOUIC ON AUTORCC ON
+  )
+endif()
 
-# Embed cursor PNGs into C++ at build time (generated source)
+# Embed cursor PNGs into C++ at build time
+find_package(Python3 REQUIRED)
 set(CURSOR_ASSETS_GENERATED "${CMAKE_CURRENT_BINARY_DIR}/cursor_assets_generated.cpp")
 file(GLOB CURSOR_PNGS "${CMAKE_CURRENT_SOURCE_DIR}/cursors/*.png")
 add_custom_command(
@@ -37,32 +51,28 @@ add_custom_command(
   COMMENT "Embedding cursor PNGs into C++"
 )
 
-target_sources(rpg-map-effects PRIVATE
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE
   src/plugin-main.cpp
   src/rpg_window.cpp
   src/obs_display_widget.mm
   "${CURSOR_ASSETS_GENERATED}"
 )
 
-target_include_directories(rpg-map-effects PRIVATE
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_compile_features(rpg-map-effects PRIVATE cxx_std_17)
+target_compile_features(${CMAKE_PROJECT_NAME} PRIVATE cxx_std_17)
 
-target_link_libraries(rpg-map-effects PRIVATE
-  OBS::libobs
-  OBS::frontend-api
-  Qt6::Widgets
-)
+set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})
 
-# Match built-in OBS plugin conventions (no 'lib' prefix on macOS)
-if (COMMAND set_target_properties_obs)
-  set_target_properties_obs(rpg-map-effects PROPERTIES
-    FOLDER plugins
-    PREFIX ""
+# Allow plugin to load when placed inside OBS.app (PlugIns folder): use OBS's Frameworks.
+# Runpath order: own bundle's Frameworks, then OBS.app/Contents/Frameworks (when inside PlugIns).
+if(APPLE)
+  set_target_properties(
+    ${CMAKE_PROJECT_NAME}
+    PROPERTIES
+      XCODE_ATTRIBUTE_LD_RUNPATH_SEARCH_PATHS
+      "@executable_path/../Frameworks @executable_path/../../../../Frameworks"
   )
-else()
-  set_target_properties(rpg-map-effects PROPERTIES PREFIX "")
 endif()
-set_target_properties(rpg-map-effects PROPERTIES AUTOMOC ON)

@@ -75,36 +75,66 @@ patching OBS core.
 
 ---
 
-## Building inside the OBS source tree (macOS)
+## Building (macOS)
 
-The plugin is designed to build **inside an OBS Studio checkout**.
+This repo uses the [OBS plugin template](https://github.com/obsproject/obs-plugintemplate) for **standalone** builds. You do not need to clone OBS Studio.
 
-1. **Clone OBS Studio** (with submodules):
+### Standalone build (recommended)
 
-   ```bash
-   git clone --recursive https://github.com/obsproject/obs-studio.git
-   ```
-
-2. **Clone this plugin into the `plugins/` folder** of that checkout:
+1. **Clone this repo**:
 
    ```bash
-   cd obs-studio/plugins
-   git clone https://github.com/adiastra/RPG-Map-Effects.git rpg-map-effects
+   git clone https://github.com/adiastra/RPG-Map-Effects.git
+   cd RPG-Map-Effects
    ```
 
-3. **Wire the plugin into OBS CMake**  
-   Edit `obs-studio/plugins/CMakeLists.txt` and add, in the plugins section:
+2. **Configure and build** (Xcode generator; first run downloads OBS and deps per `buildspec.json`):
 
-   ```cmake
-   add_obs_plugin(rpg-map-effects PLATFORMS MACOS)
+   ```bash
+   cmake -S . -B build -G Xcode
+   cmake --build build --config Release
    ```
 
-4. **Configure / build OBS** as usual (e.g. Xcode generator on macOS).  
-   When OBS builds, it will also build the `rpg-map-effects` plugin.
+3. **Install** the built plugin into OBS (or copy it manually):
 
-5. **Run OBS** from your build output and open:
+   ```bash
+   cmake --install build --config Release
+   ```
 
-   - **Tools → RPG Map Effects**
+   Default install prefix is `~/Library/Application Support/obs-studio/plugins`. Copy `rpg-map-effects.plugin` from there into your OBS app’s plugin folder if needed (e.g. `OBS.app/Contents/PlugIns/`). To install **inside OBS.app**, copy the whole bundle:  
+   `cp -R build/Release/rpg-map-effects.plugin "/Applications/OBS.app/Contents/PlugIns/"`  
+   (folder name is **PlugIns**; the plugin will use OBS’s frameworks from the app).
+
+4. **Run OBS** and open **Tools → RPG Map Effects**.
+
+**Architecture (macOS):** The plugin must match your OBS build: **arm64** (Apple Silicon) or **x86_64** (Intel). By default the build uses your Mac’s native arch (arm64 on M-series). If OBS reports “incompatible architecture (have 'arm64', need 'x86_64')”, you’re running Intel OBS—either switch to an arm64 OBS build or build the plugin for Intel:
+   ```bash
+   cmake -S . -B build -G Xcode -DCMAKE_OSX_ARCHITECTURES=x86_64
+   cmake --build build --config Release
+   ```
+
+### Building inside the OBS source tree (alternative)
+
+You can still build the plugin as part of the OBS Studio tree:
+
+1. Clone OBS Studio (with submodules), then clone this repo into `obs-studio/plugins/rpg-map-effects`.
+2. In `obs-studio/plugins/CMakeLists.txt` add: `add_obs_plugin(rpg-map-effects PLATFORMS MACOS)`.
+3. Use the **in-tree** `CMakeLists.txt`: copy `CMakeLists.in-tree.txt` to `CMakeLists.txt` in this repo (see that file for details).
+
+---
+
+## Releases
+
+Release artifacts are built by [GitHub Actions](https://github.com/adiastra/RPG-Map-Effects/actions). To create a release:
+
+1. Set `version` in `buildspec.json` (e.g. `1.0.0`), commit and push to `main`.
+2. Create and push a **version tag**:  
+   `git tag -a 1.0.0 -m "Release 1.0.0"` then `git push origin 1.0.0`
+3. After the workflow finishes, open **Releases** on GitHub, edit the **draft** release, add notes, and click **Publish release**.
+
+See **[RELEASING.md](RELEASING.md)** for full steps, optional code signing/notarization, and troubleshooting.
+
+**Installing from a release:** Download the latest release for your platform (macOS `.pkg`, Windows `.exe`/`.zip`, Ubuntu `.deb`) and install the plugin into OBS (e.g. on macOS, run the `.pkg`, or copy `rpg-map-effects.plugin` into `~/Library/Application Support/obs-studio/plugins` or `OBS.app/Contents/PlugIns/`).
 
 ---
 

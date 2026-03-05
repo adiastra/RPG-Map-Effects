@@ -1,0 +1,15 @@
+# Standalone build (template)
+.deps/
+build/
+cmake/.CMakeBuildNumber
+*.user
+*.xcuserstate
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

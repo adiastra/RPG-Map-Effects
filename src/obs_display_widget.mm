@@ -1,3 +1,7 @@
+#if defined(__APPLE__)
+#import <objc/objc.h>
+#endif
+
 #include "obs_display_widget.hpp"
 
 #include <QHideEvent>
@@ -18,10 +22,6 @@ extern "C" {
 #include <graphics/graphics.h>
 #include <obs-frontend-api.h>
 }
-
-#if defined(__APPLE__)
-#import <objc/objc.h>
-#endif
 
 /** Draws the direction arrow on top of the display using Qt (so it always shows). */
 class ArrowOverlay : public QWidget {
@@ -302,8 +302,8 @@ void OBSDisplayWidget::createDisplay()
 
 #if defined(__APPLE__)
     // Match OBS' OBSQTDisplay approach: for a Qt native window on macOS,
-    // the winId is the underlying NSView*.
-    info.window.view = (id)winId();
+    // winId() is the NSView*; Qt may expose it as WId (unsigned long long). __bridge: no ownership transfer.
+    info.window.view = (__bridge id)(void *)winId();
 #elif defined(_WIN32)
     info.window.hwnd = (void *)winId();
 #else
