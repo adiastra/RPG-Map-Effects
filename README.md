@@ -18,6 +18,7 @@ patching OBS core.
 
 - **Battlemap view**
   - Choose a battlemap scene from a dropdown; the plugin window and Program scene follow it.
+  - Battlemap scenes are any scenes whose name starts with `Map:` (case‑insensitive). Only those appear in the dropdown.
   - Click on the map display to drive FX placement and selection.
 
 - **Grid overlay**
@@ -53,9 +54,11 @@ patching OBS core.
   - Check **Set direction (click map)**, then click on the map to set the **selected** effect’s rotation so it “faces” that point.
   - Useful for characters or directional effects; rotation is applied to the FX scene item.
 
-- **Cursor on output**
-  - **Show cursor on output**: adds a small dot to the battlemap that follows the mouse, drawn on stream/recording.
-  - Cursor uses **Screen** blend. **Cursor** size (8–64 px) and **Cursor color…** are configurable; the dot is generated as a PNG and updated when size/color change.
+- **Cursor overlay**
+  - Right‑click on the map preview to access **Show cursor / Hide cursor** for the current battlemap.
+  - When shown, a cursor image (from a toolbar **Cursor** dropdown) is added as an `image_source` named `RPG Map Cursor`, centered on the map and locked to the mouse position while the pointer is over the preview.
+  - Cursor images are embedded PNG assets (e.g. `cursor`, `pointer`, `target`, `double`, `clicks`); the toolbar dropdown selects which asset is written to disk and used for the cursor source.
+  - The cursor is managed **per battlemap**: each `Map:` scene can have its own cursor item. On plugin open/refresh, any existing cursors in battlemap scenes are hidden so the preview starts clean.
 
 ---
 
