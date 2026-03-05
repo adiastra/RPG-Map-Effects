@@ -38,7 +38,7 @@ patching OBS core.
     - Click on the map to **spawn** an instance into the current battlemap.
     - Configure:
       - **Sequence [ms]** using `[250] name` prefixes in the template to stage child items.
-      - **Label on map** (optional text inside the FX scene, moves with the effect).
+      - **Label on map** (optional text inside the FX scene, moves with the effect; label text and color are configurable).
       - **Fade‑out** duration (ms) for a hide transition when clearing.
       - **Lifetime** (seconds, `0` = infinite) to auto‑clear.
   - Per‑template defaults (sequence, label, fade, lifetime) are saved per template UUID.
@@ -52,6 +52,7 @@ patching OBS core.
 
 - **Set direction (click‑to‑face)**
   - Check **Set direction (click map)**, then click on the map to set the **selected** effect’s rotation so it “faces” that point.
+  - Dragging with Set direction enabled, or in right‑click **Rotate** lock mode, shows a cyan arrow and continuously rotates the selected FX toward the mouse while you move.
   - Useful for characters or directional effects; rotation is applied to the FX scene item.
 
 - **Cursor overlay**
@@ -120,6 +121,12 @@ The plugin is designed to build **inside an OBS Studio checkout**.
 5. **Manage active effects**
    - Use the **Active Effects** list to select, rename, and clear effects.
    - Clear buttons support per‑effect fade‑out when configured.
+   - Editing an effect’s label in the list, or in the label text field, updates the in‑scene label text (and keeps the configured label color).
+
+6. **Show or hide the cursor overlay**
+   - Use the toolbar **Cursor** dropdown to choose a cursor style.
+   - Right‑click on the map preview and choose **Show cursor** to add the cursor overlay to the current `Map:` scene; move the mouse over the preview to reposition it.
+   - Right‑click again and choose **Hide cursor** to hide the cursor in that battlemap.
 
 ---
 
@@ -128,9 +135,4 @@ The plugin is designed to build **inside an OBS Studio checkout**.
 - This is a **frontend plugin** that uses `obs-frontend-api.h` and Qt widgets.
 - The UI is a **floating window**, not a dock, to maximize map real estate.
 - All scene and source manipulation uses the public OBS API; no OBS core patches are required.
-
-Possible future improvements:
-
-- Live drag rotation (drag to rotate the selected FX continuously)
-- Optional temporary arrow overlay when setting direction
 
