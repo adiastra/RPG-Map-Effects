@@ -13,6 +13,7 @@ Everything lives inside this plugin; it uses only public OBS APIs and does **not
 patching OBS core.
 
 ---
+![SCR-20260305-mocl](https://github.com/user-attachments/assets/dd9db77e-27e7-4a64-9a71-ab3c90d3f81e)
 
 ## Features (current)
 
