@@ -50,10 +50,11 @@ Releases are built by GitHub Actions when you push a **version tag**. A **draft*
 
 ## Artifacts users get
 
+This repo’s CI builds **macOS only**. Each release includes:
+
 - **macOS:** `.pkg` installer and `.tar.xz` (universal: arm64 + x86_64).
-- **Windows:** `.exe` installer and `.zip`.
-- **Ubuntu 24.04:** `.deb`, `.ddeb` (debug), `.tar.xz`.
-- **Source:** `.tar.xz` of the repo.
+
+Windows and Ubuntu builds are disabled in the workflow; you can re-enable them later in `.github/workflows/build-project.yaml` if you add support.
 
 ## Troubleshooting
 

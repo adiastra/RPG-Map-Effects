@@ -134,7 +134,7 @@ Release artifacts are built by [GitHub Actions](https://github.com/adiastra/RPG-
 
 See **[RELEASING.md](RELEASING.md)** for full steps, optional code signing/notarization, and troubleshooting.
 
-**Installing from a release:** Download the latest release for your platform (macOS `.pkg`, Windows `.exe`/`.zip`, Ubuntu `.deb`) and install the plugin into OBS (e.g. on macOS, run the `.pkg`, or copy `rpg-map-effects.plugin` into `~/Library/Application Support/obs-studio/plugins` or `OBS.app/Contents/PlugIns/`).
+**Installing from a release:** Download the latest release (macOS `.pkg` and `.tar.xz`; other platforms not built in CI) and install the plugin into OBS (e.g. on macOS, run the `.pkg`, or copy `rpg-map-effects.plugin` into `~/Library/Application Support/obs-studio/plugins` or `OBS.app/Contents/PlugIns/`).
 
 ---
 
