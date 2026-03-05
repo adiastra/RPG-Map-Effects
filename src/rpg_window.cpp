@@ -1,5 +1,6 @@
 #include "rpg_window.hpp"
 #include "obs_display_widget.hpp"
+#include "cursor_assets.h"
 
 #include <cstdlib>
 #include <obs-module.h>
@@ -80,6 +81,12 @@ static bool IsFxTemplateSceneName(const QString &name)
 {
     // Accept FX:, fx:, Fx:, fX: etc.
     return name.startsWith("fx:", Qt::CaseInsensitive);
+}
+
+static bool IsBattlemapSceneName(const QString &name)
+{
+    // Battlemap scenes are prefixed with "Map:" (case-insensitive).
+    return name.startsWith(QStringLiteral("Map:"), Qt::CaseInsensitive);
 }
 
 static QString GetDefaultsConfigPath()
@@ -199,7 +206,7 @@ static void AddBattlemapScenesToCombo(QComboBox *combo)
         obs_source_t *src = scenes.sources.array[i];
         const char *name = obs_source_get_name(src);
         const QString qname = QString::fromUtf8(name);
-        if (!IsFxTemplateSceneName(qname))
+        if (!IsFxTemplateSceneName(qname) && IsBattlemapSceneName(qname))
             combo->addItem(qname);
     }
 
@@ -340,6 +347,7 @@ static void RestartMediaForSceneItem(obs_sceneitem_t *item)
 }
 
 static const char *kGridSourceName = "RPG Map Grid";
+static const char *kCursorSourceName = "RPG Map Cursor";
 
 static QString GetGridPngPath()
 {
@@ -432,6 +440,24 @@ static bool findGridItemInScene(obs_scene_t *, obs_sceneitem_t *item, void *para
     return false;
 }
 
+/** Find the scene item that uses the cursor source (for add/update). */
+struct CursorItemCtx {
+    obs_source_t *cursorSource = nullptr;
+    obs_sceneitem_t *item = nullptr;
+};
+
+static bool findCursorItemInScene(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+    auto *ctx = static_cast<CursorItemCtx *>(param);
+    if (!ctx->cursorSource)
+        return true;
+    if (obs_sceneitem_get_source(item) != ctx->cursorSource)
+        return true;
+    ctx->item = item;
+    obs_sceneitem_addref(item);
+    return false;
+}
+
 struct AddGridToSceneData {
     obs_source_t *gridSource = nullptr;
     bool visible = false;
@@ -461,6 +487,95 @@ static void AddOrShowGridInSceneHelper(void *param, obs_scene_t *scene)
         obs_sceneitem_set_order(item, OBS_ORDER_MOVE_TOP);
         obs_sceneitem_release(item);
     }
+}
+
+struct CursorInSceneData {
+    obs_source_t *cursorSource = nullptr;
+    float x = 0.0f;
+    float y = 0.0f;
+    bool visible = true;
+    bool createIfMissing = true;
+    float boundsSize = 48.0f;
+    bool updateVisibility = true;
+};
+
+static void AddOrUpdateCursorInSceneHelper(void *param, obs_scene_t *scene)
+{
+    auto *data = static_cast<CursorInSceneData *>(param);
+    if (!data || !data->cursorSource || !scene)
+        return;
+
+    CursorItemCtx ctx;
+    ctx.cursorSource = data->cursorSource;
+    obs_scene_enum_items(scene, findCursorItemInScene, &ctx);
+
+    if (ctx.item) {
+        struct vec2 pos;
+        vec2_set(&pos, data->x, data->y);
+        obs_sceneitem_set_pos(ctx.item, &pos);
+
+        struct vec2 bounds;
+        vec2_set(&bounds, data->boundsSize, data->boundsSize);
+        obs_sceneitem_set_bounds_type(ctx.item, OBS_BOUNDS_SCALE_INNER);
+        obs_sceneitem_set_bounds(ctx.item, &bounds);
+
+        if (data->updateVisibility) {
+            obs_sceneitem_set_visible(ctx.item, data->visible);
+            if (data->visible)
+                obs_sceneitem_set_order(ctx.item, OBS_ORDER_MOVE_TOP);
+        }
+        obs_sceneitem_release(ctx.item);
+        return;
+    }
+
+    if (!data->visible || !data->createIfMissing)
+        return;
+
+    obs_sceneitem_t *item = obs_scene_add(scene, data->cursorSource);
+    if (item) {
+        struct vec2 pos;
+        vec2_set(&pos, data->x, data->y);
+        obs_sceneitem_set_pos(item, &pos);
+        obs_sceneitem_set_alignment(item, OBS_ALIGN_CENTER);
+
+        struct vec2 bounds;
+        vec2_set(&bounds, data->boundsSize, data->boundsSize);
+        obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_SCALE_INNER);
+        obs_sceneitem_set_bounds(item, &bounds);
+
+        obs_sceneitem_set_visible(item, true);
+        obs_sceneitem_set_order(item, OBS_ORDER_MOVE_TOP);
+        obs_sceneitem_release(item);
+    }
+}
+
+static void HideCursorInAllScenes(obs_source_t *cursorSource)
+{
+    if (!cursorSource)
+        return;
+
+    obs_frontend_source_list list = {};
+    obs_frontend_get_scenes(&list);
+    for (size_t i = 0; i < list.sources.num; i++) {
+        obs_source_t *sceneSrc = list.sources.array[i];
+        if (!sceneSrc || !obs_source_is_scene(sceneSrc))
+            continue;
+        const char *nm = obs_source_get_name(sceneSrc);
+        const QString qname = QString::fromUtf8(nm ? nm : "");
+        if (!IsBattlemapSceneName(qname))
+            continue;
+        obs_scene_t *scene = obs_scene_from_source(sceneSrc);
+        if (!scene)
+            continue;
+        CursorInSceneData data;
+        data.cursorSource = cursorSource;
+        data.visible = false;
+        data.createIfMissing = false;
+        obs_enter_graphics();
+        obs_scene_atomic_update(scene, AddOrUpdateCursorInSceneHelper, &data);
+        obs_leave_graphics();
+    }
+    obs_frontend_source_list_free(&list);
 }
 
 /** Add grid to user's battlemap scene and set visibility. Uses obs_scene_atomic_update like OBS frontend. */
@@ -920,6 +1035,15 @@ RPGWindow::RPGWindow()
 
     AddBattlemapScenesToCombo(sceneCombo_);
 
+    // On open/refresh: hide cursor in all battlemap scenes so preview starts clean.
+    {
+        obs_source_t *cursor = obs_get_source_by_name(kCursorSourceName);
+        if (cursor) {
+            HideCursorInAllScenes(cursor);
+            obs_source_release(cursor);
+        }
+    }
+
     QObject::connect(sceneCombo_, &QComboBox::currentTextChanged, this,
                      [this](const QString &sceneName) {
                          display->setSceneByName(sceneName);
@@ -1085,6 +1209,28 @@ RPGWindow::RPGWindow()
                              }
                              mouseLabel->setText(text);
                          }
+                         // Cursor follow: when cursor is shown in the current scene, lock it to mouse.
+                         if (inside && cursorSource_.Get() && sceneCombo_) {
+                             const QString sceneName = sceneCombo_->currentText();
+                             if (!sceneName.isEmpty()) {
+                                 OBSSourceAutoRelease sceneSrc(
+                                     obs_get_source_by_name(sceneName.toUtf8().constData()));
+                                 if (sceneSrc.Get() && obs_source_is_scene(sceneSrc.Get())) {
+                                     obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
+                                     if (scene) {
+                                         CursorInSceneData data;
+                                         data.cursorSource = cursorSource_.Get();
+                                         data.x = x;
+                                         data.y = y;
+                                         data.createIfMissing = false; // Only move if it already exists
+                                         data.updateVisibility = false; // Do not change visible/hidden state
+                                         obs_enter_graphics();
+                                         obs_scene_atomic_update(scene, AddOrUpdateCursorInSceneHelper, &data);
+                                         obs_leave_graphics();
+                                     }
+                                 }
+                             }
+                         }
                          // Move lock: FX center follows cursor (item has OBS_ALIGN_CENTER).
                          if (fxLockMode_ == FxLockMode::Move && display && fxList && inside) {
                              const int row = fxList->currentRow();
@@ -1169,6 +1315,28 @@ RPGWindow::RPGWindow()
         // When checked, do not show an arrow until the user actually drags; keeps behavior simple.
         display->clearDirectionArrow();
     });
+    tb->addSeparator();
+
+    tb->addWidget(new QLabel("Cursor:", this));
+    cursorCombo_ = new QComboBox(this);
+    cursorCombo_->setMinimumWidth(100);
+    cursorCombo_->setToolTip(QStringLiteral("Cursor style for Show cursor (right-click on map)."));
+    const int nCursors = get_cursor_asset_count();
+    const CursorAsset *assets = get_cursor_assets();
+    int defaultIdx = 0;
+    for (int i = 0; i < nCursors && assets; i++) {
+        QString name = QString::fromUtf8(assets[i].filename);
+        cursorCombo_->addItem(QFileInfo(name).baseName(), name);
+        if (name == QLatin1String("cursor.png"))
+            defaultIdx = i;
+    }
+    if (nCursors > 0)
+        cursorCombo_->setCurrentIndex(defaultIdx);
+    tb->addWidget(cursorCombo_);
+    QObject::connect(cursorCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
+        updateCursorSourceImage();
+    });
+
     tb->addSeparator();
 
     QObject::connect(display, &OBSDisplayWidget::sceneClicked, this,
@@ -1453,7 +1621,7 @@ RPGWindow::RPGWindow()
                          }
                      });
 
-    // Right-click on map: over FX → Move / Rotate / Clear. Over empty → no actions.
+    // Right-click on map: over FX → Move / Rotate / Clear.
     QObject::connect(display, &OBSDisplayWidget::sceneRightClicked, this,
                      [this, fadeSpin](float sceneX, float sceneY, float, float, bool inside) {
                          if (!inside)
@@ -1463,6 +1631,31 @@ RPGWindow::RPGWindow()
                          if (overFx) {
                              fxList->setCurrentRow(idx);
                          }
+
+                         // Determine cursor visibility state for current battlemap scene.
+                         bool cursorVisibleInScene = false;
+                         bool cursorExistsInScene = false;
+                         if (cursorSource_.Get() && sceneCombo_) {
+                             const QString sceneName = sceneCombo_->currentText();
+                             if (!sceneName.isEmpty()) {
+                                 OBSSourceAutoRelease sceneSrc(
+                                     obs_get_source_by_name(sceneName.toUtf8().constData()));
+                                 if (sceneSrc.Get() && obs_source_is_scene(sceneSrc.Get())) {
+                                     obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
+                                     if (scene) {
+                                         CursorItemCtx ctx;
+                                         ctx.cursorSource = cursorSource_.Get();
+                                         obs_scene_enum_items(scene, findCursorItemInScene, &ctx);
+                                         if (ctx.item) {
+                                             cursorExistsInScene = true;
+                                             cursorVisibleInScene = obs_sceneitem_visible(ctx.item);
+                                             obs_sceneitem_release(ctx.item);
+                                         }
+                                     }
+                                 }
+                             }
+                         }
+
                          QMenu menu(this);
                          QAction *moveAct = nullptr;
                          QAction *rotateAct = nullptr;
@@ -1472,8 +1665,57 @@ RPGWindow::RPGWindow()
                              rotateAct = menu.addAction(QStringLiteral("Rotate"));
                              clearAct = menu.addAction(QStringLiteral("Clear"));
                          }
+                         static constexpr float kCursorDisplaySize = 48.0f;
+                         QAction *showCursorAct = nullptr;
+                         QAction *hideCursorAct = nullptr;
+                         if (!cursorVisibleInScene)
+                             showCursorAct = menu.addAction(QStringLiteral("Show cursor"));
+                         if (cursorExistsInScene && cursorVisibleInScene)
+                             hideCursorAct = menu.addAction(QStringLiteral("Hide cursor"));
                          QAction *chosen = menu.exec(QCursor::pos());
-                         if (overFx) {
+                         if (chosen == showCursorAct) {
+                             if (ensureCursorSource().Get()) {
+                                 const QString sceneName = sceneCombo_->currentText();
+                                 OBSSourceAutoRelease sceneSrc(obs_get_source_by_name(sceneName.toUtf8().constData()));
+                                 if (sceneSrc.Get() && obs_source_is_scene(sceneSrc.Get())) {
+                                     obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
+                                     if (scene) {
+                                         const uint32_t sceneW = obs_source_get_width(sceneSrc.Get());
+                                         const uint32_t sceneH = obs_source_get_height(sceneSrc.Get());
+                                         const float centerX = (sceneW > 0) ? float(sceneW) * 0.5f : 0.0f;
+                                         const float centerY = (sceneH > 0) ? float(sceneH) * 0.5f : 0.0f;
+                                         CursorInSceneData data;
+                                         data.cursorSource = cursorSource_.Get();
+                                         data.x = centerX;
+                                         data.y = centerY;
+                                         data.visible = true;
+                                         data.createIfMissing = true;
+                                         data.boundsSize = kCursorDisplaySize;
+                                         obs_enter_graphics();
+                                         obs_scene_atomic_update(scene, AddOrUpdateCursorInSceneHelper, &data);
+                                         obs_leave_graphics();
+                                     }
+                                 }
+                             }
+                         } else if (chosen == hideCursorAct) {
+                             if (cursorSource_.Get()) {
+                                 const QString sceneName = sceneCombo_->currentText();
+                                 OBSSourceAutoRelease sceneSrc(obs_get_source_by_name(sceneName.toUtf8().constData()));
+                                 if (sceneSrc.Get() && obs_source_is_scene(sceneSrc.Get())) {
+                                     obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
+                                     if (scene) {
+                                         CursorInSceneData data;
+                                         data.cursorSource = cursorSource_.Get();
+                                         data.visible = false;
+                                         data.createIfMissing = false;
+                                         data.boundsSize = kCursorDisplaySize;
+                                         obs_enter_graphics();
+                                         obs_scene_atomic_update(scene, AddOrUpdateCursorInSceneHelper, &data);
+                                         obs_leave_graphics();
+                                     }
+                                 }
+                             }
+                         } else if (overFx) {
                              const int row = idx;
                              if (chosen == clearAct) {
                                  clearFxAtRow(row, fadeSpin ? fadeSpin->value() : 600);
@@ -1589,7 +1831,7 @@ RPGWindow::RPGWindow()
     QObject::connect(refreshBtn, &QAbstractButton::clicked, this, [refreshLists]() { refreshLists(); });
 
     QObject::connect(spawnBtn, &QAbstractButton::clicked, this,
-                     [this, fxCombo, sequenceBox, labelCheck, fadeSpin, lifetimeSpin, snapCheck, gridCellSpin]() {
+                     [this, fxCombo, sequenceBox, labelCheck, fadeSpin, lifetimeSpin, gridCellSpin, snapCheck]() {
         if (!lastClickInside)
             return;
 
@@ -1897,9 +2139,97 @@ void RPGWindow::syncGridOutputToScene(const QString &sceneName, bool showOnOutpu
     }
 }
 
+QString RPGWindow::selectedCursorFilename() const
+{
+    if (!cursorCombo_ || cursorCombo_->count() == 0)
+        return QStringLiteral("cursor.png");
+    QVariant v = cursorCombo_->currentData();
+    if (!v.isValid() || v.toString().isEmpty())
+        return QStringLiteral("cursor.png");
+    return v.toString();
+}
+
+void RPGWindow::updateCursorSourceImage()
+{
+    if (!cursorSource_.Get())
+        return;
+    const QString filename = selectedCursorFilename();
+    const CursorAsset *asset = get_cursor_asset_by_name(filename.toUtf8().constData());
+    if (!asset || !asset->data || asset->size == 0)
+        return;
+    char *configPath = obs_module_config_path("cursor.png");
+    if (!configPath)
+        return;
+    QString path = QString::fromUtf8(configPath);
+    bfree(configPath);
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile file(path);
+    if (file.open(QIODevice::WriteOnly)) {
+        file.write(reinterpret_cast<const char *>(asset->data), static_cast<qint64>(asset->size));
+        file.close();
+    }
+    obs_data_t *settings = obs_data_create();
+    obs_data_set_string(settings, "file", path.toUtf8().constData());
+    obs_data_set_bool(settings, "unload", false);
+    obs_source_update(cursorSource_.Get(), settings);
+    obs_data_release(settings);
+}
+
+OBSSource RPGWindow::ensureCursorSource()
+{
+    if (cursorSource_.Get())
+        return cursorSource_;
+
+    const QString filename = selectedCursorFilename();
+    const CursorAsset *asset = get_cursor_asset_by_name(filename.toUtf8().constData());
+    if (!asset || !asset->data || asset->size == 0)
+        return cursorSource_;
+
+    char *configPath = obs_module_config_path("cursor.png");
+    if (!configPath) {
+        return cursorSource_;
+    }
+    QString path = QString::fromUtf8(configPath);
+    bfree(configPath);
+
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    QFile file(path);
+    if (file.open(QIODevice::WriteOnly)) {
+        file.write(reinterpret_cast<const char *>(asset->data), static_cast<qint64>(asset->size));
+        file.close();
+    }
+
+    obs_source_t *existing = obs_get_source_by_name(kCursorSourceName);
+    if (existing) {
+        cursorSource_ = OBSSource(existing);
+        obs_source_release(existing);
+        obs_data_t *settings = obs_data_create();
+        obs_data_set_string(settings, "file", path.toUtf8().constData());
+        obs_data_set_bool(settings, "unload", false);
+        obs_source_update(cursorSource_.Get(), settings);
+        obs_data_release(settings);
+        return cursorSource_;
+    }
+
+    obs_data_t *settings = obs_data_create();
+    obs_data_set_string(settings, "file", path.toUtf8().constData());
+    obs_data_set_bool(settings, "unload", false);
+    obs_source_t *src = obs_source_create("image_source", kCursorSourceName, settings, nullptr);
+    obs_data_release(settings);
+    if (src)
+        cursorSource_ = OBSSource(src);
+    return cursorSource_;
+}
+
+void RPGWindow::releaseOBSResources()
+{
+    if (display)
+        display->releaseOBSResources();
+}
+
 RPGWindow::~RPGWindow()
 {
-    /* Remove grid from all scenes so OBS can clear scene data cleanly on exit. */
-    if (gridSource_.Get())
-        removeSourceFromAllScenes(gridSource_.Get());
+    /* Release our refs only. Do not call obs_frontend_get_scenes/obs_enter_graphics here:
+     * destructor runs during plugin unload when OBS may already be shutting down;
+     * that can crash. Scenes will be torn down by OBS. */
 }

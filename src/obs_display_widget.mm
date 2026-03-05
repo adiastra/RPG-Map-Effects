@@ -119,14 +119,22 @@ OBSDisplayWidget::OBSDisplayWidget(QWidget *parent) : QWidget(parent)
     mousePollTimer_->start();
 }
 
-OBSDisplayWidget::~OBSDisplayWidget()
+void OBSDisplayWidget::releaseOBSResources()
 {
     destroyDisplay();
     if (sceneSource) {
         if (showing)
             obs_source_dec_showing(sceneSource);
         obs_source_release(sceneSource);
+        sceneSource = nullptr;
     }
+    showing = false;
+}
+
+OBSDisplayWidget::~OBSDisplayWidget()
+{
+    if (display || sceneSource)
+        releaseOBSResources();
 }
 
 void OBSDisplayWidget::setSceneByName(const QString &sceneName)

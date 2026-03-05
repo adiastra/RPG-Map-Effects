@@ -14,6 +14,8 @@ cmake_minimum_required(VERSION 3.22...3.30)
 
 project(rpg-map-effects LANGUAGES C CXX)
 
+find_package(Python3 REQUIRED)
+
 if (COMMAND legacy_check)
   legacy_check()
 endif()
@@ -21,10 +23,25 @@ endif()
 add_library(rpg-map-effects MODULE)
 add_library(OBS::rpg-map-effects ALIAS rpg-map-effects)
 
+# Embed cursor PNGs into C++ at build time (generated source)
+set(CURSOR_ASSETS_GENERATED "${CMAKE_CURRENT_BINARY_DIR}/cursor_assets_generated.cpp")
+file(GLOB CURSOR_PNGS "${CMAKE_CURRENT_SOURCE_DIR}/cursors/*.png")
+add_custom_command(
+  OUTPUT "${CURSOR_ASSETS_GENERATED}"
+  COMMAND ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8
+    "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/scripts/embed_cursors.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cursors"
+    "${CURSOR_ASSETS_GENERATED}"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/scripts/embed_cursors.py" ${CURSOR_PNGS}
+  COMMENT "Embedding cursor PNGs into C++"
+)
+
 target_sources(rpg-map-effects PRIVATE
   src/plugin-main.cpp
   src/rpg_window.cpp
   src/obs_display_widget.mm
+  "${CURSOR_ASSETS_GENERATED}"
 )
 
 target_include_directories(rpg-map-effects PRIVATE

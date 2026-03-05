@@ -41,6 +41,9 @@ public:
     /** For overlay: get current arrow state (returns false if not showing). */
     bool getDirectionArrow(float &fromX, float &fromY, float &toX, float &toY) const;
 
+    /** Release OBS display and scene source. Call on OBS_FRONTEND_EVENT_EXIT so destructor does not touch OBS during shutdown. */
+    void releaseOBSResources();
+
 signals:
     void sceneClicked(float sceneX, float sceneY, float normX, float normY, bool inside);
     void sceneRightClicked(float sceneX, float sceneY, float normX, float normY, bool inside);

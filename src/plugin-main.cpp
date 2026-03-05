@@ -26,6 +26,11 @@ static void open_window()
 
 static void on_frontend_event(enum obs_frontend_event event, void *)
 {
+    if (event == OBS_FRONTEND_EVENT_EXIT) {
+        if (g_window)
+            g_window->releaseOBSResources();
+        return;
+    }
     if (event != OBS_FRONTEND_EVENT_FINISHED_LOADING)
         return;
 
@@ -48,6 +53,7 @@ void obs_module_unload(void)
     obs_frontend_remove_event_callback(on_frontend_event, nullptr);
 
     if (g_window) {
+        g_window->releaseOBSResources();
         g_window->close();
         delete g_window;
         g_window = nullptr;

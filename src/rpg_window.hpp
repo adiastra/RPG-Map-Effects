@@ -20,6 +20,9 @@ public:
     RPGWindow();
     ~RPGWindow() override;
 
+    /** Release OBS resources (display, scene ref). Call on OBS_FRONTEND_EVENT_EXIT to avoid shutdown crash. */
+    void releaseOBSResources();
+
 private:
     OBSSource ensureGridSource();
     void updateGridSourceSettings(obs_source_t *gridSource, int cellSize, int lineWidth, const QColor &color);
@@ -57,8 +60,17 @@ private:
     QLineEdit *labelEdit = nullptr;
     QComboBox *sceneCombo_ = nullptr;
     QCheckBox *setDirectionCheck_ = nullptr;
+    QComboBox *cursorCombo_ = nullptr;
 
     OBSSource gridSource_;
+    OBSSource cursorSource_;
+
+    /** Selected cursor asset filename (from cursorCombo_). */
+    QString selectedCursorFilename() const;
+    /** Create or return the cursor image source (uses asset from cursorCombo_). Adds to scene only when user chooses Show cursor. */
+    OBSSource ensureCursorSource();
+    /** Write selected cursor asset to config file and update cursor source if it exists. */
+    void updateCursorSourceImage();
 
     void fadeOutAndRemoveInstance(const FxInstance &inst, int fadeMs);
     int findNearestFxInstanceIndex(float sceneX, float sceneY) const;
