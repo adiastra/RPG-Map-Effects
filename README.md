@@ -60,11 +60,11 @@ patching OBS core.
 
 <img width="490" height="389" alt="SCR-20260305-mral" src="https://github.com/user-attachments/assets/7b86cdb9-7fa0-4bb0-9ebb-4daa1787824f" />
 
-- **Set direction **
+- **Set direction**
   - Right click and select  **Rotate**, then set the direction and click to complete. 
   - Useful for characters or directional effects; rotation is applied to the FX scene item.
-- ** Move **
-  - Right-click and select ** Move **, the item will be locked to the mouse. Click to release and place the item. 
+- **Move**
+  - Right-click and select **Move**, the item will be locked to the mouse. Click to release and place the item. 
 
 -<img width="159" height="172" alt="SCR-20260305-mrxa" src="https://github.com/user-attachments/assets/7ec9264e-a90d-4a2d-870d-f9d9a5d8fd70" />
 
