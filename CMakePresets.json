@@ -1,0 +1,61 @@
+{
+  "version": 8,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "macos-base",
+      "hidden": true,
+      "cacheVariables": {
+        "ENABLE_FRONTEND_API": true,
+        "ENABLE_QT": true
+      }
+    },
+    {
+      "name": "macos",
+      "displayName": "macOS (Xcode)",
+      "description": "Build for macOS (arm64 + x86_64) with Xcode",
+      "inherits": "macos-base",
+      "binaryDir": "${sourceDir}/build_macos",
+      "generator": "Xcode",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64;x86_64",
+        "ENABLE_FRONTEND_API": true,
+        "ENABLE_QT": true
+      }
+    },
+    {
+      "name": "macos-ci",
+      "displayName": "macOS CI",
+      "description": "macOS build for CI (universal)",
+      "inherits": "macos",
+      "cacheVariables": {
+        "CMAKE_COMPILE_WARNING_AS_ERROR": false
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "macos",
+      "configurePreset": "macos",
+      "displayName": "macOS",
+      "description": "Build for macOS",
+      "configuration": "RelWithDebInfo"
+    },
+    {
+      "name": "macos-ci",
+      "configurePreset": "macos-ci",
+      "displayName": "macOS CI",
+      "description": "macOS CI build (Release)",
+      "configuration": "Release"
+    }
+  ]
+}
