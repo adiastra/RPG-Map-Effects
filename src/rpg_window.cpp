@@ -131,11 +131,25 @@ static QIcon iconTarget()
 
 static const int kToolButtonSize = 24;
 
+static uint32_t argbFromColor(const QColor &c)
+{
+    return (uint32_t(c.alpha()) << 24) | (uint32_t(c.red()) << 16) |
+           (uint32_t(c.green()) << 8) | uint32_t(c.blue());
+}
+
+static QString DefaultLabelFromTemplateName(const QString &templateName)
+{
+    QString label = templateName.trimmed();
+    int colon = label.indexOf(':');
+    if (colon >= 0)
+        label = label.mid(colon + 1).trimmed();
+    return label;
+}
+
 struct TemplateDefaults {
     int fadeMs = 600;
     int lifetimeSec = 0;
     bool sequence = true;
-    bool showLabel = false;
 };
 
 static TemplateDefaults LoadTemplateDefaults(const QString &templateUuid)
@@ -162,12 +176,11 @@ static TemplateDefaults LoadTemplateDefaults(const QString &templateUuid)
     def.fadeMs = tmpl.value("fadeMs").toInt(def.fadeMs);
     def.lifetimeSec = tmpl.value("lifetimeSec").toInt(def.lifetimeSec);
     def.sequence = tmpl.value("sequence").toBool(def.sequence);
-    def.showLabel = tmpl.value("showLabel").toBool(def.showLabel);
     return def;
 }
 
 static void SaveTemplateDefaults(const QString &templateUuid, int fadeMs, int lifetimeSec,
-                                 bool sequence, bool showLabel)
+                                 bool sequence)
 {
     const QString path = GetDefaultsConfigPath();
     if (path.isEmpty())
@@ -186,7 +199,6 @@ static void SaveTemplateDefaults(const QString &templateUuid, int fadeMs, int li
     tmpl.insert("fadeMs", fadeMs);
     tmpl.insert("lifetimeSec", lifetimeSec);
     tmpl.insert("sequence", sequence);
-    tmpl.insert("showLabel", showLabel);
     root.insert(templateUuid, tmpl);
 
     QFile out(path);
@@ -279,6 +291,12 @@ static std::vector<ChildItemSchedule> BuildChildSchedule(obs_scene_t *scene)
 
             obs_source_t *src = obs_sceneitem_get_source(item);
             const char *nm = src ? obs_source_get_name(src) : nullptr;
+            if (nm) {
+                QString name = QString::fromUtf8(nm);
+                // Never sequence FX label items; they start hidden and are shown via context menus.
+                if (name.startsWith("FX Label "))
+                    return true;
+            }
 
             ChildItemSchedule s;
             s.delayMs = ParseDelayMsFromItemName(nm);
@@ -594,7 +612,7 @@ static void addGridToSceneAndSetVisible(obs_scene_t *scene, obs_source_t *gridSo
 }
 
 static void SpawnFxAtClick(const QString &templateSceneName, obs_source_t *mapSceneSource, float x, float y,
-                           bool sequenceByDelay, int defaultFadeMs, bool showLabel,
+                           bool sequenceByDelay, int defaultFadeMs,
                            const QString &labelText, uint32_t labelColorArgb,
                            QString &outMapSceneUuid, QString &outEffectUuid,
                            int64_t &outSceneItemId)
@@ -643,8 +661,10 @@ static void SpawnFxAtClick(const QString &templateSceneName, obs_source_t *mapSc
     if (sequenceByDelay && fxSceneForChildren)
         SetAllSceneItemsHiddenForSequenceOnGraphicsThread(fxSceneForChildren);
 
-        // Optional: add a text label inside the FX scene so it moves with the effect.
-        if (showLabel && !labelText.isEmpty() && fxSceneForChildren) {
+        // Add a text label inside the FX scene so it moves with the effect.
+        // The label is always created (using template name or custom text) but starts hidden;
+        // visibility is controlled later via context menus.
+        if (!labelText.isEmpty() && fxSceneForChildren) {
             obs_data_t *settings = obs_data_create();
             obs_data_set_string(settings, "text", labelText.toUtf8().constData());
 
@@ -692,6 +712,8 @@ static void SpawnFxAtClick(const QString &templateSceneName, obs_source_t *mapSc
                         obs_sceneitem_set_alignment(labelItem, OBS_ALIGN_CENTER);
                         obs_sceneitem_set_pos(labelItem, &lpos);
                     }
+
+                    obs_sceneitem_set_visible(labelItem, false);
                 }
                 obs_source_release(labelSrc);
             }
@@ -770,6 +792,82 @@ static void SpawnFxAtClick(const QString &templateSceneName, obs_source_t *mapSc
             }
         }
     }
+}
+
+struct FxLabelUpdateCtx {
+    QString text;
+    uint32_t colorArgb = 0;
+};
+
+static void UpdateFxLabelSourcesByEffectUuid(const QString &effectUuid, const QString &labelText,
+                                             uint32_t colorArgb)
+{
+    if (effectUuid.isEmpty())
+        return;
+
+    OBSSourceAutoRelease fxSrc(obs_get_source_by_uuid(effectUuid.toUtf8().constData()));
+    if (!fxSrc.Get())
+        return;
+    obs_scene_t *scene = obs_scene_from_source(fxSrc.Get());
+    if (!scene)
+        return;
+
+    FxLabelUpdateCtx ctx{labelText, colorArgb};
+    obs_scene_enum_items(
+        scene,
+        [](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+            auto *ctx = static_cast<FxLabelUpdateCtx *>(param);
+            obs_source_t *src = obs_sceneitem_get_source(item);
+            if (!src)
+                return true;
+            const char *nm = obs_source_get_name(src);
+            if (!nm)
+                return true;
+            QString name = QString::fromUtf8(nm);
+            if (!name.startsWith("FX Label "))
+                return true;
+            obs_data_t *settings = obs_source_get_settings(src);
+            if (!settings)
+                return true;
+            obs_data_set_string(settings, "text", ctx->text.toUtf8().constData());
+            if (ctx->colorArgb != 0)
+                obs_data_set_int(settings, "color1", (int64_t)ctx->colorArgb);
+            obs_source_update(src, settings);
+            obs_data_release(settings);
+            return true;
+        },
+        &ctx);
+}
+
+static void SetFxLabelsVisibleByEffectUuid(const QString &effectUuid, bool visible)
+{
+    if (effectUuid.isEmpty())
+        return;
+
+    OBSSourceAutoRelease fxSrc(obs_get_source_by_uuid(effectUuid.toUtf8().constData()));
+    if (!fxSrc.Get())
+        return;
+    obs_scene_t *scene = obs_scene_from_source(fxSrc.Get());
+    if (!scene)
+        return;
+
+    obs_scene_enum_items(
+        scene,
+        [](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+            const bool visible = *static_cast<bool *>(param);
+            obs_source_t *src = obs_sceneitem_get_source(item);
+            if (!src)
+                return true;
+            const char *nm = obs_source_get_name(src);
+            if (!nm)
+                return true;
+            QString name = QString::fromUtf8(nm);
+            if (!name.startsWith("FX Label "))
+                return true;
+            obs_sceneitem_set_visible(item, visible);
+            return true;
+        },
+        (void *)&visible);
 }
 
 static void ClearLastFx(QString mapSceneUuid, QString fxUuid, int64_t sceneItemId)
@@ -1417,13 +1515,8 @@ RPGWindow::RPGWindow()
     labelRowLayout->setContentsMargins(0, 0, 0, 0);
     labelRowLayout->setSpacing(4);
 
-    auto *labelCheck = new QCheckBox(labelRowWidget);
-    labelCheck->setChecked(false);
-    labelCheck->setToolTip("Show label on map for this instance");
-    labelRowLayout->addWidget(labelCheck);
-
     labelEdit = new QLineEdit(labelRowWidget);
-    labelEdit->setPlaceholderText("Optional label");
+    labelEdit->setPlaceholderText(QStringLiteral("Optional label (defaults to template name)"));
     labelRowLayout->addWidget(labelEdit, 1);
 
     auto *labelColorBtn = new QToolButton(labelRowWidget);
@@ -1480,7 +1573,7 @@ RPGWindow::RPGWindow()
     timersLayout->addStretch(1);
     fxLayout->addWidget(timersRow);
 
-    auto applyTemplateDefaults = [fxCombo, sequenceBox, labelCheck, fadeSpin, lifetimeSpin]() {
+    auto applyTemplateDefaults = [this, fxCombo, sequenceBox, fadeSpin, lifetimeSpin]() {
         const QString name = fxCombo->currentText();
         if (name.isEmpty())
             return;
@@ -1493,9 +1586,12 @@ RPGWindow::RPGWindow()
             return;
         TemplateDefaults def = LoadTemplateDefaults(QString::fromUtf8(uuid));
         sequenceBox->setChecked(def.sequence);
-        labelCheck->setChecked(def.showLabel);
         fadeSpin->setValue(def.fadeMs);
         lifetimeSpin->setValue(def.lifetimeSec);
+        if (labelEdit) {
+            labelEdit->clear();
+            labelEdit->setPlaceholderText(DefaultLabelFromTemplateName(name));
+        }
     };
 
     QObject::connect(fxCombo, &QComboBox::currentTextChanged, this, applyTemplateDefaults);
@@ -1580,15 +1676,64 @@ RPGWindow::RPGWindow()
                          if (row < 0 || row >= (int)activeFx.size())
                              return;
                          fxList->setCurrentRow(row);
+                         FxInstance &inst = activeFx[static_cast<size_t>(row)];
+
+                         // Determine label visibility state for this FX instance.
+                         bool hasLabel = false;
+                         bool labelVisible = false;
+                         {
+                             if (!inst.effectUuid.isEmpty()) {
+                                 OBSSourceAutoRelease fxSrc(
+                                     obs_get_source_by_uuid(inst.effectUuid.toUtf8().constData()));
+                                 if (fxSrc.Get()) {
+                                     obs_scene_t *scene = obs_scene_from_source(fxSrc.Get());
+                                     if (scene) {
+                                         struct LabelVisCtx {
+                                             bool hasLabel = false;
+                                             bool anyVisible = false;
+                                         } ctx;
+                                         obs_scene_enum_items(
+                                             scene,
+                                             [](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+                                                 auto *ctx = static_cast<LabelVisCtx *>(param);
+                                                 obs_source_t *src = obs_sceneitem_get_source(item);
+                                                 if (!src)
+                                                     return true;
+                                                 const char *nm = obs_source_get_name(src);
+                                                 if (!nm)
+                                                     return true;
+                                                 QString name = QString::fromUtf8(nm);
+                                                 if (!name.startsWith("FX Label "))
+                                                     return true;
+                                                 ctx->hasLabel = true;
+                                                 if (obs_sceneitem_visible(item))
+                                                     ctx->anyVisible = true;
+                                                 return true;
+                                             },
+                                             &ctx);
+                                         hasLabel = ctx.hasLabel;
+                                         labelVisible = ctx.anyVisible;
+                                     }
+                                 }
+                             }
+                         }
+
                          QMenu menu(this);
                          auto *clearAct = menu.addAction("Clear selected");
                          auto *dupAct = menu.addAction("Duplicate as template");
+                         QAction *showLabelAct = nullptr;
+                         QAction *hideLabelAct = nullptr;
+                         if (hasLabel && !labelVisible)
+                             showLabelAct = menu.addAction("Show label");
+                         if (hasLabel && labelVisible)
+                             hideLabelAct = menu.addAction("Hide label");
+
                          QAction *chosen = menu.exec(fxList->mapToGlobal(pos));
                          if (chosen == clearAct) {
                              clearFxAtRow(row, fadeSpin ? fadeSpin->value() : 600);
                          } else if (chosen == dupAct) {
-                             const FxInstance &inst = activeFx[static_cast<size_t>(row)];
-                             OBSSourceAutoRelease fxSrc(obs_get_source_by_uuid(inst.effectUuid.toUtf8().constData()));
+                             OBSSourceAutoRelease fxSrc(
+                                 obs_get_source_by_uuid(inst.effectUuid.toUtf8().constData()));
                              if (!fxSrc.Get() || !obs_source_is_scene(fxSrc.Get()))
                                  return;
                              const char *origName = obs_source_get_name(fxSrc.Get());
@@ -1618,18 +1763,23 @@ RPGWindow::RPGWindow()
                              const int idx = fxCombo->findText(newName);
                              if (idx >= 0)
                                  fxCombo->setCurrentIndex(idx);
+                         } else if (chosen == showLabelAct || chosen == hideLabelAct) {
+                             const bool makeVisible = (chosen == showLabelAct);
+                             SetFxLabelsVisibleByEffectUuid(inst.effectUuid, makeVisible);
                          }
                      });
 
-    // Right-click on map: over FX → Move / Rotate / Clear.
+    // Right-click on map: over FX → Move / Rotate / Clear / label options; anywhere → cursor options.
     QObject::connect(display, &OBSDisplayWidget::sceneRightClicked, this,
                      [this, fadeSpin](float sceneX, float sceneY, float, float, bool inside) {
                          if (!inside)
                              return;
                          const int idx = findNearestFxInstanceIndex(sceneX, sceneY);
                          const bool overFx = (idx >= 0 && fxList && idx < fxList->count());
+                         FxInstance *ctxInst = nullptr;
                          if (overFx) {
                              fxList->setCurrentRow(idx);
+                             ctxInst = &activeFx[static_cast<size_t>(idx)];
                          }
 
                          // Determine cursor visibility state for current battlemap scene.
@@ -1660,10 +1810,55 @@ RPGWindow::RPGWindow()
                          QAction *moveAct = nullptr;
                          QAction *rotateAct = nullptr;
                          QAction *clearAct = nullptr;
+                         QAction *showLabelAct = nullptr;
+                         QAction *hideLabelAct = nullptr;
                          if (overFx) {
                              moveAct = menu.addAction(QStringLiteral("Move"));
                              rotateAct = menu.addAction(QStringLiteral("Rotate"));
                              clearAct = menu.addAction(QStringLiteral("Clear"));
+                             // Label show/hide for this FX instance.
+                             if (ctxInst) {
+                                 bool hasLabelFx = false;
+                                 bool labelVisibleFx = false;
+                                 if (!ctxInst->effectUuid.isEmpty()) {
+                                     OBSSourceAutoRelease fxSrc(
+                                         obs_get_source_by_uuid(ctxInst->effectUuid.toUtf8().constData()));
+                                     if (fxSrc.Get()) {
+                                         obs_scene_t *scene = obs_scene_from_source(fxSrc.Get());
+                                         if (scene) {
+                                             struct LabelVisCtxFx {
+                                                 bool hasLabel = false;
+                                                 bool anyVisible = false;
+                                             } lv;
+                                             obs_scene_enum_items(
+                                                 scene,
+                                                 [](obs_scene_t *, obs_sceneitem_t *item, void *param) {
+                                                     auto *lv = static_cast<LabelVisCtxFx *>(param);
+                                                     obs_source_t *src = obs_sceneitem_get_source(item);
+                                                     if (!src)
+                                                         return true;
+                                                     const char *nm = obs_source_get_name(src);
+                                                     if (!nm)
+                                                         return true;
+                                                     QString name = QString::fromUtf8(nm);
+                                                     if (!name.startsWith("FX Label "))
+                                                         return true;
+                                                     lv->hasLabel = true;
+                                                     if (obs_sceneitem_visible(item))
+                                                         lv->anyVisible = true;
+                                                     return true;
+                                                 },
+                                                 &lv);
+                                             hasLabelFx = lv.hasLabel;
+                                             labelVisibleFx = lv.anyVisible;
+                                         }
+                                     }
+                                 }
+                                 if (hasLabelFx && !labelVisibleFx)
+                                     showLabelAct = menu.addAction(QStringLiteral("Show label"));
+                                 if (hasLabelFx && labelVisibleFx)
+                                     hideLabelAct = menu.addAction(QStringLiteral("Hide label"));
+                             }
                          }
                          static constexpr float kCursorDisplaySize = 48.0f;
                          QAction *showCursorAct = nullptr;
@@ -1729,19 +1924,19 @@ RPGWindow::RPGWindow()
                                  fxLockMode_ = FxLockMode::Rotate;
                                  if (setDirectionCheck_)
                                      setDirectionCheck_->setChecked(true);
+                             } else if (chosen == showLabelAct || chosen == hideLabelAct) {
+                                 const bool makeVisible = (chosen == showLabelAct);
+                                 if (ctxInst)
+                                     SetFxLabelsVisibleByEffectUuid(ctxInst->effectUuid, makeVisible);
                              }
                          }
                      });
 
     QObject::connect(fxList, &QListWidget::currentRowChanged, this, [this](int row) {
-        if (!labelEdit)
-            return;
         if (row < 0 || row >= (int)activeFx.size()) {
-            labelEdit->clear();
             releaseFxLockAndClearArrow();
             return;
         }
-        labelEdit->setText(activeFx[static_cast<size_t>(row)].label);
 
         // If we're in Set direction mode and selection changed, clear any existing arrow;
         // arrow will reappear only while dragging.
@@ -1761,46 +1956,10 @@ RPGWindow::RPGWindow()
         const QString newLabel = item->text().trimmed();
         inst.label = newLabel;
         syncStoredLabel(inst, newLabel);
-        if (labelEdit && fxList->currentRow() == row)
-            labelEdit->setText(newLabel);
 
         // Update text and color of any FX Label source inside this FX scene instance.
-        struct LabelUpdate {
-            QString *label;
-            uint32_t colorArgb;
-        } lu = {&inst.label,
-                (uint32_t(labelColor_.alpha()) << 24) | (uint32_t(labelColor_.red()) << 16) |
-                    (uint32_t(labelColor_.green()) << 8) | uint32_t(labelColor_.blue())};
-        OBSSourceAutoRelease fxSrc(obs_get_source_by_uuid(inst.effectUuid.toUtf8().constData()));
-        if (fxSrc.Get()) {
-            obs_scene_t *scene = obs_scene_from_source(fxSrc.Get());
-            if (scene) {
-                obs_scene_enum_items(
-                    scene,
-                    [](obs_scene_t *, obs_sceneitem_t *it, void *param) {
-                        LabelUpdate *lu = static_cast<LabelUpdate *>(param);
-                        obs_source_t *src = obs_sceneitem_get_source(it);
-                        if (!src)
-                            return true;
-                        const char *nm = obs_source_get_name(src);
-                        if (!nm)
-                            return true;
-                        QString name = QString::fromUtf8(nm);
-                        if (!name.startsWith("FX Label "))
-                            return true;
-                        obs_data_t *settings = obs_source_get_settings(src);
-                        if (!settings)
-                            return true;
-                        obs_data_set_string(settings, "text", lu->label->toUtf8().constData());
-                        if (lu->colorArgb != 0)
-                            obs_data_set_int(settings, "color1", (int64_t)lu->colorArgb);
-                        obs_source_update(src, settings);
-                        obs_data_release(settings);
-                        return true;
-                    },
-                    &lu);
-            }
-        }
+        const uint32_t labelArgb = argbFromColor(labelColor_);
+        UpdateFxLabelSourcesByEffectUuid(inst.effectUuid, newLabel, labelArgb);
     });
 
     auto refreshLists = [this, fxCombo, applyTemplateDefaults]() {
@@ -1831,7 +1990,7 @@ RPGWindow::RPGWindow()
     QObject::connect(refreshBtn, &QAbstractButton::clicked, this, [refreshLists]() { refreshLists(); });
 
     QObject::connect(spawnBtn, &QAbstractButton::clicked, this,
-                     [this, fxCombo, sequenceBox, labelCheck, fadeSpin, lifetimeSpin, gridCellSpin, snapCheck]() {
+                     [this, fxCombo, sequenceBox, fadeSpin, lifetimeSpin, gridCellSpin, snapCheck]() {
         if (!lastClickInside)
             return;
 
@@ -1853,19 +2012,14 @@ RPGWindow::RPGWindow()
 
         const bool seq = sequenceBox->isChecked();
 
-        QString labelText;
-        if (labelCheck->isChecked()) {
-            // Default label is template scene name without the "fx:" prefix.
-            labelText = fxCombo->currentText().trimmed();
-            int colon = labelText.indexOf(':');
-            if (colon >= 0)
-                labelText = labelText.mid(colon + 1).trimmed();
+        // Default label is template scene name without the "FX:" prefix.
+        QString labelText = DefaultLabelFromTemplateName(fxCombo->currentText());
 
-            if (labelEdit) {
-                const QString custom = labelEdit->text().trimmed();
-                if (!custom.isEmpty())
-                    labelText = custom;
-            }
+        // If a custom label is entered, prefer that text for this spawn only.
+        if (labelEdit) {
+            const QString custom = labelEdit->text().trimmed();
+            if (!custom.isEmpty())
+                labelText = custom;
         }
 
         obs_source_t *tmplSrc = obs_get_source_by_name(fxCombo->currentText().toUtf8().constData());
@@ -1873,18 +2027,15 @@ RPGWindow::RPGWindow()
             const char *uuid = obs_source_get_uuid(tmplSrc);
             if (uuid) {
                 SaveTemplateDefaults(QString::fromUtf8(uuid), fadeSpin->value(), lifetimeSpin->value(),
-                                    seq, labelCheck->isChecked());
+                                     seq);
             }
             obs_source_release(tmplSrc);
         }
 
-        const uint32_t labelArgb = (uint32_t(labelColor_.alpha()) << 24) |
-                                   (uint32_t(labelColor_.red()) << 16) |
-                                   (uint32_t(labelColor_.green()) << 8) |
-                                   uint32_t(labelColor_.blue());
+        const uint32_t labelArgb = argbFromColor(labelColor_);
 
         SpawnFxAtClick(fxCombo->currentText(), mapSrc.Get(), spawnX, spawnY, seq,
-                       fadeSpin->value(), labelCheck->isChecked(), labelText, labelArgb,
+                       fadeSpin->value(), labelText, labelArgb,
                        mapUuid, fxUuid, sceneItemId);
 
         if (!mapUuid.isEmpty() && !fxUuid.isEmpty() && sceneItemId != 0) {
@@ -1932,6 +2083,10 @@ RPGWindow::RPGWindow()
                 });
             }
         }
+
+        // After spawn, clear the label text box; the placeholder still shows the template's default.
+        if (labelEdit)
+            labelEdit->clear();
     });
 
     QObject::connect(clearAllBtn, &QAbstractButton::clicked, this, [this, fadeSpin]() {
@@ -2007,62 +2162,6 @@ RPGWindow::RPGWindow()
         obs_source_release(cur);
     }
 
-    // Allow editing label of selected instance to update on-map text.
-    QObject::connect(labelEdit, &QLineEdit::editingFinished, this, [this]() {
-        if (!fxList)
-            return;
-        const int row = fxList->currentRow();
-        if (row < 0 || row >= (int)activeFx.size())
-            return;
-
-        FxInstance &inst = activeFx[static_cast<size_t>(row)];
-        const QString newLabel = labelEdit->text().trimmed();
-        inst.label = newLabel;
-        syncStoredLabel(inst, newLabel);
-
-        // Update text and color of any FX Label source inside this FX scene instance.
-        struct LabelUpdateEdit {
-            QString *label;
-            uint32_t colorArgb;
-        } luEdit = {&inst.label,
-                    (uint32_t(labelColor_.alpha()) << 24) | (uint32_t(labelColor_.red()) << 16) |
-                        (uint32_t(labelColor_.green()) << 8) | uint32_t(labelColor_.blue())};
-        OBSSourceAutoRelease fxSrc(obs_get_source_by_uuid(inst.effectUuid.toUtf8().constData()));
-        if (fxSrc.Get()) {
-            obs_scene_t *scene = obs_scene_from_source(fxSrc.Get());
-            if (scene) {
-                obs_scene_enum_items(
-                    scene,
-                    [](obs_scene_t *, obs_sceneitem_t *item, void *param) {
-                        LabelUpdateEdit *lu = static_cast<LabelUpdateEdit *>(param);
-                        obs_source_t *src = obs_sceneitem_get_source(item);
-                        if (!src)
-                            return true;
-                        const char *nm = obs_source_get_name(src);
-                        if (!nm)
-                            return true;
-                        QString name = QString::fromUtf8(nm);
-                        if (!name.startsWith("FX Label "))
-                            return true;
-                        obs_data_t *settings = obs_source_get_settings(src);
-                        if (!settings)
-                            return true;
-                        obs_data_set_string(settings, "text", lu->label->toUtf8().constData());
-                        if (lu->colorArgb != 0)
-                            obs_data_set_int(settings, "color1", (int64_t)lu->colorArgb);
-                        obs_source_update(src, settings);
-                        obs_data_release(settings);
-                        return true;
-                    },
-                    &luEdit);
-            }
-        }
-
-        // Update list text: show only the label (or template name if no custom label).
-        const QString listText = inst.label.isEmpty() ? inst.templateName : inst.label;
-        if (QListWidgetItem *item = fxList->item(row))
-            item->setText(listText);
-    });
 }
 
 OBSSource RPGWindow::ensureGridSource()

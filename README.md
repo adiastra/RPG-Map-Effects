@@ -38,7 +38,7 @@ patching OBS core.
     - Click on the map to **spawn** an instance into the current battlemap.
     - Configure:
       - **Sequence [ms]** using `[250] name` prefixes in the template to stage child items.
-      - **Label on map** (optional text inside the FX scene, moves with the effect; label text and color are configurable).
+      - **Label text** (optional text inside the FX scene, moves with the effect; label text and color are configurable, and labels start hidden until you show them).
       - **Fade‑out** duration (ms) for a hide transition when clearing.
       - **Lifetime** (seconds, `0` = infinite) to auto‑clear.
   - Per‑template defaults (sequence, label, fade, lifetime) are saved per template UUID.
@@ -121,7 +121,7 @@ The plugin is designed to build **inside an OBS Studio checkout**.
 5. **Manage active effects**
    - Use the **Active Effects** list to select, rename, and clear effects.
    - Clear buttons support per‑effect fade‑out when configured.
-   - Editing an effect’s label in the list, or in the label text field, updates the in‑scene label text (and keeps the configured label color).
+   - Editing an effect’s label in the list updates the in‑scene label text (and keeps the configured label color). Labels start hidden by default; use context menus (FX list or map) to show/hide them.
 
 6. **Show or hide the cursor overlay**
    - Use the toolbar **Cursor** dropdown to choose a cursor style.
