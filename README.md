@@ -18,11 +18,13 @@ patching OBS core.
 
 ## Features (current)
 
+<img width="305" height="175" alt="SCR-20260305-mpoq" src="https://github.com/user-attachments/assets/9425cd11-d786-47fd-ad1d-342629b50261" />
 - **Battlemap view**
   - Choose a battlemap scene from a dropdown; the plugin window and Program scene follow it.
   - Battlemap scenes are any scenes whose name starts with `Map:` (case‑insensitive). Only those appear in the dropdown.
   - Click on the map display to drive FX placement and selection.
-
+  - 
+<img width="446" height="48" alt="SCR-20260305-mpyt" src="https://github.com/user-attachments/assets/4f2a1d6f-36ba-4487-b8aa-25fdb3a39c4b" />
 - **Grid overlay**
   - Preview-only grid (in the plugin window) with:
     - Cell size (px)
@@ -33,7 +35,8 @@ patching OBS core.
     - Renders a PNG at the base canvas size and adds it as a source to the selected battlemap scene.
     - Places the grid source on top of other sources.
     - Checkbox on → grid visible; off → grid hidden (item stays in the scene).
-
+    - 
+<img width="273" height="315" alt="SCR-20260305-mqik" src="https://github.com/user-attachments/assets/004b7fba-ed1f-4fe9-be2b-efc5d3706004" />
 - **FX template scenes**
   - Any scene named like `FX: Something` (case‑insensitive `fx:` prefix) is treated as an **effect template**.
   - You can pick an FX template, then:
@@ -52,15 +55,17 @@ patching OBS core.
     - Clear selected / last / all, with configured fade‑out where applicable.
   - Double‑click / edit labels in the list to rename instances; labels update the in‑scene text.
 
-- **Set direction (click‑to‑face)**
-  - Check **Set direction (click map)**, then click on the map to set the **selected** effect’s rotation so it “faces” that point.
-  - Dragging with Set direction enabled, or in right‑click **Rotate** lock mode, shows a cyan arrow and continuously rotates the selected FX toward the mouse while you move.
+<img width="490" height="389" alt="SCR-20260305-mral" src="https://github.com/user-attachments/assets/7b86cdb9-7fa0-4bb0-9ebb-4daa1787824f" />
+- **Set direction **
+  - Right click and select  **Rotate**, then set the direction and click to complete. 
   - Useful for characters or directional effects; rotation is applied to the FX scene item.
+- ** Move **
+  - Right-click and select ** Move **, the item will be locked to the mouse. Click to release and place the item. 
 
-- **Cursor overlay**
+-<img width="159" height="172" alt="SCR-20260305-mrxa" src="https://github.com/user-attachments/assets/7ec9264e-a90d-4a2d-870d-f9d9a5d8fd70" />
+ **Cursor overlay**
   - Right‑click on the map preview to access **Show cursor / Hide cursor** for the current battlemap.
   - When shown, a cursor image (from a toolbar **Cursor** dropdown) is added as an `image_source` named `RPG Map Cursor`, centered on the map and locked to the mouse position while the pointer is over the preview.
-  - Cursor images are embedded PNG assets (e.g. `cursor`, `pointer`, `target`, `double`, `clicks`); the toolbar dropdown selects which asset is written to disk and used for the cursor source.
   - The cursor is managed **per battlemap**: each `Map:` scene can have its own cursor item. On plugin open/refresh, any existing cursors in battlemap scenes are hidden so the preview starts clean.
 
 ---
