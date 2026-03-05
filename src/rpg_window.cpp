@@ -1454,6 +1454,7 @@ RPGWindow::RPGWindow()
         if (!cursorPopup_) {
             cursorPopup_ = new QFrame(this, Qt::Popup);
             cursorPopup_->setFrameStyle(QFrame::StyledPanel);
+            cursorPopup_->setStyleSheet("QToolButton { background-color: #d6d6d6; }");
             QGridLayout *grid = new QGridLayout(cursorPopup_);
             const int cols = 2;
             const int iconSz = 32;
