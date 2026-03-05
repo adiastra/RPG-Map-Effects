@@ -13,8 +13,10 @@
 #include <QCursor>
 #include <QDateTime>
 #include <QDir>
+#include <QFrame>
 #include <QFile>
 #include <QFileInfo>
+#include <QGridLayout>
 #include <QGroupBox>
 #include <QImage>
 #include <QPainter>
@@ -113,23 +115,43 @@ static QIcon iconFromColor(const QColor &c)
     return QIcon(pm);
 }
 
-static QIcon iconTarget()
+static QIcon iconTarget(int size = 20)
 {
-    QPixmap pm(20, 20);
+    if (size <= 0)
+        size = 20;
+    QPixmap pm(size, size);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(Qt::darkGray, 2));
+    const float s = size / 20.0f;
+    p.setPen(QPen(Qt::black, qMax(1, (int)(2 * s))));
     p.setBrush(Qt::NoBrush);
-    p.drawEllipse(4, 4, 12, 12);
-    p.drawEllipse(7, 7, 6, 6);
-    p.setBrush(Qt::darkGray);
-    p.drawEllipse(9, 9, 2, 2);
+    p.drawEllipse(QRectF(4 * s, 4 * s, 12 * s, 12 * s));
+    p.drawEllipse(QRectF(7 * s, 7 * s, 6 * s, 6 * s));
+    p.setBrush(Qt::black);
+    p.drawEllipse(QRectF(9 * s, 9 * s, 2 * s, 2 * s));
     p.end();
     return QIcon(pm);
 }
 
 static const int kToolButtonSize = 24;
+
+static QIcon iconFromCursorAsset(const CursorAsset &asset)
+{
+    if (!asset.data || asset.size <= 0)
+        return QIcon();
+
+    QPixmap pm;
+    pm.loadFromData(reinterpret_cast<const uchar *>(asset.data),
+                    static_cast<uint>(asset.size), "PNG");
+    if (pm.isNull())
+        return QIcon();
+
+    const int iconSize = 32;
+    QPixmap scaled =
+        pm.scaled(iconSize, iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    return QIcon(scaled);
+}
 
 static uint32_t argbFromColor(const QColor &c)
 {
@@ -223,6 +245,20 @@ static void AddBattlemapScenesToCombo(QComboBox *combo)
     }
 
     obs_frontend_source_list_free(&scenes);
+}
+
+/** Return scene source by name, or empty if not found / not a scene. Caller can use obs_scene_from_source() when needed. */
+static OBSSourceAutoRelease GetSceneSourceByName(const QString &sceneName)
+{
+    if (sceneName.isEmpty())
+        return OBSSourceAutoRelease();
+    obs_source_t *src = obs_get_source_by_name(sceneName.toUtf8().constData());
+    if (!src || !obs_source_is_scene(src)) {
+        if (src)
+            obs_source_release(src);
+        return OBSSourceAutoRelease();
+    }
+    return OBSSourceAutoRelease(src);
 }
 
 static void AddFxTemplateScenesToCombo(QComboBox *combo)
@@ -403,7 +439,9 @@ static bool WriteBlankGridPng(const QString &path)
     return img.save(path, "PNG");
 }
 
-/** Callback for obs_scene_atomic_update: remove any scene item that uses the given source. */
+/** Callback for obs_scene_atomic_update: remove any scene item that uses the given source.
+ *  RemoveSourceFromSceneHelper and removeSourceFromAllScenes are intentionally unused for now;
+ *  kept for future "remove grid/cursor from all scenes" or debugging. */
 static void RemoveSourceFromSceneHelper(void *param, obs_scene_t *scene)
 {
     obs_source_t *sourceToRemove = static_cast<obs_source_t *>(param);
@@ -418,7 +456,7 @@ static void RemoveSourceFromSceneHelper(void *param, obs_scene_t *scene)
     obs_scene_enum_items(scene, removeIfMatch, sourceToRemove);
 }
 
-/** Remove the given source from every scene that contains it (so plugin unload doesn't leave refs). */
+/** Remove the given source from every scene that contains it. */
 static void removeSourceFromAllScenes(obs_source_t *source)
 {
     if (!source)
@@ -458,6 +496,7 @@ static bool findGridItemInScene(obs_scene_t *, obs_sceneitem_t *item, void *para
     return false;
 }
 
+// --- Cursor helpers ---
 /** Find the scene item that uses the cursor source (for add/update). */
 struct CursorItemCtx {
     obs_source_t *cursorSource = nullptr;
@@ -681,8 +720,10 @@ static void SpawnFxAtClick(const QString &templateSceneName, obs_source_t *mapSc
             obs_data_set_bool(settings, "outline", false);
             obs_data_set_bool(settings, "drop_shadow", false);
 
-            if (labelColorArgb != 0)
+            if (labelColorArgb != 0) {
                 obs_data_set_int(settings, "color1", (int64_t)labelColorArgb);
+                obs_data_set_int(settings, "color2", (int64_t)labelColorArgb);
+            }
 
             QByteArray nameUtf8 =
                 QString("FX Label %1").arg(labelText).toUtf8();
@@ -714,6 +755,7 @@ static void SpawnFxAtClick(const QString &templateSceneName, obs_source_t *mapSc
                     }
 
                     obs_sceneitem_set_visible(labelItem, false);
+                    obs_sceneitem_set_order(labelItem, OBS_ORDER_MOVE_TOP);
                 }
                 obs_source_release(labelSrc);
             }
@@ -737,8 +779,8 @@ static void SpawnFxAtClick(const QString &templateSceneName, obs_source_t *mapSc
     // Default facing: up (top of screen). OBS rotation 0 = right, -90 = up.
     obs_sceneitem_set_rot(fxItem, -90.0f);
 
-    // Default: screen blend over the battlemap.
-    obs_sceneitem_set_blending_mode(fxItem, OBS_BLEND_SCREEN);
+    // Default: additive blend over the battlemap.
+    obs_sceneitem_set_blending_mode(fxItem, OBS_BLEND_ADDITIVE);
 
     // Configure an automatic fade-out hide transition on the FX scene item.
     if (defaultFadeMs > 0) {
@@ -794,6 +836,7 @@ static void SpawnFxAtClick(const QString &templateSceneName, obs_source_t *mapSc
     }
 }
 
+// --- FX label helpers (DefaultLabelFromTemplateName above used for spawn placeholder) ---
 struct FxLabelUpdateCtx {
     QString text;
     uint32_t colorArgb = 0;
@@ -830,8 +873,10 @@ static void UpdateFxLabelSourcesByEffectUuid(const QString &effectUuid, const QS
             if (!settings)
                 return true;
             obs_data_set_string(settings, "text", ctx->text.toUtf8().constData());
-            if (ctx->colorArgb != 0)
+            if (ctx->colorArgb != 0) {
                 obs_data_set_int(settings, "color1", (int64_t)ctx->colorArgb);
+                obs_data_set_int(settings, "color2", (int64_t)ctx->colorArgb);
+            }
             obs_source_update(src, settings);
             obs_data_release(settings);
             return true;
@@ -955,10 +1000,8 @@ int RPGWindow::findNearestFxInstanceIndex(float sceneX, float sceneY) const
 
 QString RPGWindow::getMapSceneUuidFromName(const QString &sceneName) const
 {
-    if (sceneName.isEmpty())
-        return {};
-    OBSSourceAutoRelease src(obs_get_source_by_name(sceneName.toUtf8().constData()));
-    if (!src.Get() || !obs_source_is_scene(src.Get()))
+    OBSSourceAutoRelease src = GetSceneSourceByName(sceneName);
+    if (!src.Get())
         return {};
     const char *uuid = obs_source_get_uuid(src.Get());
     return uuid ? QString::fromUtf8(uuid) : QString();
@@ -1022,8 +1065,6 @@ void RPGWindow::syncStoredLabel(const FxInstance &inst, const QString &newLabel)
 void RPGWindow::releaseFxLockAndClearArrow()
 {
     fxLockMode_ = FxLockMode::None;
-    if (setDirectionCheck_)
-        setDirectionCheck_->setChecked(false);
     if (display)
         display->clearDirectionArrow();
 }
@@ -1116,6 +1157,7 @@ RPGWindow::RPGWindow()
     auto *fxLayout = new QVBoxLayout(fxPanel);
     fxLayout->setContentsMargins(4, 4, 4, 4);
     fxLayout->setSpacing(3);
+    fxLayout->setAlignment(Qt::AlignTop);
     hLayout->addWidget(fxPanel, /*stretch*/ 1);
 
     setCentralWidget(central);
@@ -1148,9 +1190,8 @@ RPGWindow::RPGWindow()
                          currentMapSceneUuid_ = getMapSceneUuidFromName(sceneName);
                          refreshFxListForCurrentMap();
                          releaseFxLockAndClearArrow();
-                         OBSSourceAutoRelease sceneSrc(
-                             obs_get_source_by_name(sceneName.toUtf8().constData()));
-                         if (sceneSrc.Get() && obs_source_is_scene(sceneSrc.Get()))
+                         OBSSourceAutoRelease sceneSrc = GetSceneSourceByName(sceneName);
+                         if (sceneSrc.Get())
                              obs_frontend_set_current_scene(sceneSrc.Get());
                      });
 
@@ -1278,6 +1319,7 @@ RPGWindow::RPGWindow()
                                                                  float ny,
                                                                  bool inside,
                                                                  bool leftButtonDown) {
+                         Q_UNUSED(leftButtonDown);
                          // Live mouse tracking in status bar (similar to click/grid readout).
                          {
                              QString text;
@@ -1307,29 +1349,25 @@ RPGWindow::RPGWindow()
                              }
                              mouseLabel->setText(text);
                          }
-                         // Cursor follow: when cursor is shown in the current scene, lock it to mouse.
-                         if (inside && cursorSource_.Get() && sceneCombo_) {
-                             const QString sceneName = sceneCombo_->currentText();
-                             if (!sceneName.isEmpty()) {
-                                 OBSSourceAutoRelease sceneSrc(
-                                     obs_get_source_by_name(sceneName.toUtf8().constData()));
-                                 if (sceneSrc.Get() && obs_source_is_scene(sceneSrc.Get())) {
-                                     obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
-                                     if (scene) {
-                                         CursorInSceneData data;
-                                         data.cursorSource = cursorSource_.Get();
-                                         data.x = x;
-                                         data.y = y;
-                                         data.createIfMissing = false; // Only move if it already exists
-                                         data.updateVisibility = false; // Do not change visible/hidden state
-                                         obs_enter_graphics();
-                                         obs_scene_atomic_update(scene, AddOrUpdateCursorInSceneHelper, &data);
-                                         obs_leave_graphics();
-                                     }
-                                 }
-                             }
-                         }
-                         // Move lock: FX center follows cursor (item has OBS_ALIGN_CENTER).
+                        // Cursor follow: when cursor is shown in the current scene, lock it to mouse.
+                        if (inside && cursorSource_.Get() && sceneCombo_) {
+                            OBSSourceAutoRelease sceneSrc = GetSceneSourceByName(sceneCombo_->currentText());
+                            if (sceneSrc.Get()) {
+                                obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
+                                if (scene) {
+                                    CursorInSceneData data;
+                                    data.cursorSource = cursorSource_.Get();
+                                    data.x = x;
+                                    data.y = y;
+                                    data.createIfMissing = false; // Only move if it already exists
+                                    data.updateVisibility = false; // Do not change visible/hidden state
+                                    obs_enter_graphics();
+                                    obs_scene_atomic_update(scene, AddOrUpdateCursorInSceneHelper, &data);
+                                    obs_leave_graphics();
+                                }
+                            }
+                        }
+                        // Move lock: FX center follows cursor (item has OBS_ALIGN_CENTER).
                          if (fxLockMode_ == FxLockMode::Move && display && fxList && inside) {
                              const int row = fxList->currentRow();
                              if (row >= 0 && row < (int)activeFx.size()) {
@@ -1350,9 +1388,8 @@ RPGWindow::RPGWindow()
                              return;
                          }
 
-                         // Rotate: locked rotate mode (always) or Set direction + left button down
-                         const bool inRotateMode = (fxLockMode_ == FxLockMode::Rotate) ||
-                             (setDirectionCheck_ && setDirectionCheck_->isChecked() && leftButtonDown);
+                         // Rotate: from context menu (Rotate) only
+                         const bool inRotateMode = (fxLockMode_ == FxLockMode::Rotate);
                          if (!display || !inRotateMode || !fxList) {
                              if (display)
                                  display->clearDirectionArrow();
@@ -1399,103 +1436,72 @@ RPGWindow::RPGWindow()
                              releaseFxLockAndClearArrow();
                      });
 
-    setDirectionCheck_ = new QCheckBox("Set direction", this);
-    setDirectionCheck_->setChecked(false);
-    setDirectionCheck_->setToolTip(QStringLiteral("Check this, then click on the map to set the selected effect's facing direction. Arrow shows current facing (default: up)."));
-    tb->addWidget(setDirectionCheck_);
-    QObject::connect(setDirectionCheck_, &QCheckBox::toggled, this, [this](bool checked) {
-        if (!display)
-            return;
-        if (!checked) {
-            display->clearDirectionArrow();
-            return;
-        }
-        // When checked, do not show an arrow until the user actually drags; keeps behavior simple.
-        display->clearDirectionArrow();
-    });
-    tb->addSeparator();
-
     tb->addWidget(new QLabel("Cursor:", this));
-    cursorCombo_ = new QComboBox(this);
-    cursorCombo_->setMinimumWidth(100);
-    cursorCombo_->setToolTip(QStringLiteral("Cursor style for Show cursor (right-click on map)."));
-    const int nCursors = get_cursor_asset_count();
-    const CursorAsset *assets = get_cursor_assets();
-    int defaultIdx = 0;
-    for (int i = 0; i < nCursors && assets; i++) {
-        QString name = QString::fromUtf8(assets[i].filename);
-        cursorCombo_->addItem(QFileInfo(name).baseName(), name);
-        if (name == QLatin1String("cursor.png"))
-            defaultIdx = i;
-    }
-    if (nCursors > 0)
-        cursorCombo_->setCurrentIndex(defaultIdx);
-    tb->addWidget(cursorCombo_);
-    QObject::connect(cursorCombo_, QOverload<int>::of(&QComboBox::currentIndexChanged), this, [this](int) {
-        updateCursorSourceImage();
+    cursorBtn_ = new QToolButton(this);
+    cursorBtn_->setFixedSize(36, 36);
+    cursorBtn_->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    cursorBtn_->setToolTip(QStringLiteral("Cursor style for Show cursor (right-click on map)."));
+    cursorBtn_->setStyleSheet("QToolButton { background-color: #d6d6d6; }");
+    const CursorAsset *initAsset =
+        get_cursor_asset_by_name(selectedCursorFilename_.toUtf8().constData());
+    if (initAsset)
+        cursorBtn_->setIcon(iconFromCursorAsset(*initAsset));
+    QObject::connect(cursorBtn_, &QToolButton::clicked, this, [this]() {
+        const int nCursors = get_cursor_asset_count();
+        const CursorAsset *assets = get_cursor_assets();
+        if (!assets || nCursors == 0)
+            return;
+        if (!cursorPopup_) {
+            cursorPopup_ = new QFrame(this, Qt::Popup);
+            cursorPopup_->setFrameStyle(QFrame::StyledPanel);
+            QGridLayout *grid = new QGridLayout(cursorPopup_);
+            const int cols = 2;
+            const int iconSz = 32;
+            for (int i = 0; i < nCursors; i++) {
+                QString name = QString::fromUtf8(assets[i].filename);
+                QIcon icon = iconFromCursorAsset(assets[i]);
+                QToolButton *btn = new QToolButton(cursorPopup_);
+                btn->setFixedSize(iconSz, iconSz);
+                btn->setIcon(icon);
+                btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+                btn->setToolTip(QFileInfo(name).baseName());
+                connect(btn, &QToolButton::clicked, this, [this, name]() {
+                    selectedCursorFilename_ = name;
+                    const CursorAsset *a = get_cursor_asset_by_name(name.toUtf8().constData());
+                    if (a)
+                        cursorBtn_->setIcon(iconFromCursorAsset(*a));
+                    updateCursorSourceImage();
+                    cursorPopup_->close();
+                });
+                grid->addWidget(btn, i / cols, i % cols);
+            }
+        }
+        cursorPopup_->adjustSize();
+        cursorPopup_->move(cursorBtn_->mapToGlobal(QPoint(0, cursorBtn_->height())));
+        cursorPopup_->show();
     });
+    tb->addWidget(cursorBtn_);
+
+    auto *toolbarSpacer = new QWidget(this);
+    toolbarSpacer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    tb->addWidget(toolbarSpacer);
+    auto *refreshBtn = new QToolButton(this);
+    refreshBtn->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+    refreshBtn->setToolTip("Refresh scenes");
+    refreshBtn->setFixedSize(kToolButtonSize, kToolButtonSize);
+    refreshBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    auto *refreshCol = new QWidget(this);
+    auto *refreshColLayout = new QVBoxLayout(refreshCol);
+    refreshColLayout->setContentsMargins(0, 0, 0, 0);
+    refreshColLayout->setSpacing(2);
+    refreshColLayout->addWidget(refreshBtn, 0, Qt::AlignHCenter);
+    auto *refreshLbl = new QLabel("Refresh", refreshCol);
+    refreshLbl->setAlignment(Qt::AlignCenter);
+    refreshLbl->setStyleSheet("font-size: 9px;");
+    refreshColLayout->addWidget(refreshLbl);
+    tb->addWidget(refreshCol);
 
     tb->addSeparator();
-
-    QObject::connect(display, &OBSDisplayWidget::sceneClicked, this,
-                     [this, clickLabel, gridCheck, gridCellSpin](float x, float y, float nx, float ny,
-                                                                bool inside) {
-                         // Clear any previous direction arrow on new press so we never accumulate arrows.
-                         if (display)
-                             display->clearDirectionArrow();
-
-                         // Click-to-face: set selected FX rotation to face the click point (x,y in canvas space).
-                         if (setDirectionCheck_ && setDirectionCheck_->isChecked() && inside && fxList) {
-                             const int row = fxList->currentRow();
-                             if (row >= 0 && row < (int)activeFx.size()) {
-                                 const FxInstance &inst = activeFx[static_cast<size_t>(row)];
-                                 obs_sceneitem_t *item = getSceneItemForInstance(inst);
-                                 if (item) {
-                                     struct vec2 pos;
-                                     obs_sceneitem_get_pos(item, &pos);
-                                     OBSSourceAutoRelease mapSrc(obs_get_source_by_uuid(inst.mapSceneUuid.toUtf8().constData()));
-                                     if (mapSrc.Get()) {
-                                         float cx = 0.0f, cy = 0.0f;
-                                         if (scenePosToCanvas(mapSrc.Get(), pos.x, pos.y, cx, cy)) {
-                                             const float dx = x - cx;
-                                             const float dy = y - cy;
-                                             const float angleRad = std::atan2(dy, dx);
-                                             const float angleDeg = angleRad * (180.0f / 3.14159265f);
-                                             obs_sceneitem_set_rot(item, angleDeg);
-                                         }
-                                     }
-                                 }
-                             }
-                             return;
-                         }
-
-                         lastClickX = x;
-                         lastClickY = y;
-                         lastClickInside = inside;
-
-                         if (!inside) {
-                             clickLabel->setText("Click: (outside map)");
-                             return;
-                         }
-
-                         QString text = QString("Click: x=%1 y=%2  |  n=(%3, %4)")
-                                            .arg(x, 0, 'f', 1)
-                                            .arg(y, 0, 'f', 1)
-                                            .arg(nx, 0, 'f', 4)
-                                            .arg(ny, 0, 'f', 4);
-                         if (gridCheck->isChecked() && gridCellSpin->value() > 0) {
-                             const int cell = gridCellSpin->value();
-                             const int col = static_cast<int>(std::floor(x / cell));
-                             const int row = static_cast<int>(std::floor(y / cell));
-                             text += QString("  |  cell (%1, %2)").arg(col).arg(row);
-                         }
-                         clickLabel->setText(text);
-
-                         // Click-to-select nearest FX instance on the map canvas.
-                         const int idx = findNearestFxInstanceIndex(x, y);
-                         if (idx >= 0 && idx < fxList->count())
-                             fxList->setCurrentRow(idx);
-                     });
 
     // Build FX side panel UI (compact).
     fxPanel->setMaximumWidth(280);
@@ -1519,27 +1525,35 @@ RPGWindow::RPGWindow()
     labelEdit->setPlaceholderText(QStringLiteral("Optional label (defaults to template name)"));
     labelRowLayout->addWidget(labelEdit, 1);
 
-    auto *labelColorBtn = new QToolButton(labelRowWidget);
-    labelColorBtn->setIcon(iconFromColor(labelColor_));
-    labelColorBtn->setToolTip("Label color");
-    labelColorBtn->setFixedSize(kToolButtonSize, kToolButtonSize);
-    labelColorBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    labelRowLayout->addWidget(labelColorBtn);
-
     fxLayout->addWidget(labelRowWidget);
 
-    QObject::connect(labelColorBtn, &QAbstractButton::clicked, this, [this, labelColorBtn]() {
-        QColor chosen = QColorDialog::getColor(labelColor_, this, "Choose label color");
-        if (chosen.isValid()) {
-            labelColor_ = chosen;
-            labelColorBtn->setIcon(iconFromColor(chosen));
-        }
-    });
+    static const int kSpawnButtonSize = 48;
+    auto *spawnBtn = new QToolButton(this);
+    spawnBtn->setObjectName("spawnAtClickButton");
+    spawnBtn->setIcon(iconTarget(kSpawnButtonSize - 8));
+    spawnBtn->setToolTip("Click to choose spawn location on map");
+    spawnBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    spawnBtn->setFixedSize(kSpawnButtonSize, kSpawnButtonSize);
+    spawnBtn->setMinimumSize(kSpawnButtonSize, kSpawnButtonSize);
+    spawnBtn->setIconSize(QSize(kSpawnButtonSize - 8, kSpawnButtonSize - 8));
+    spawnBtn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    spawnBtn->setStyleSheet(
+        QString("QToolButton#spawnAtClickButton { min-width: %1px; min-height: %1px; max-width: %1px; max-height: %1px; background-color: #4caf50; }"
+                " QToolButton#spawnAtClickButton:checked { background-color: #c62828; }")
+            .arg(kSpawnButtonSize));
+    spawnBtn->setCheckable(true);
+    spawnBtn_ = spawnBtn;
+    auto *clearAllBtn = new QToolButton(this);
+    clearAllBtn->setIcon(style()->standardIcon(QStyle::SP_TrashIcon));
+    clearAllBtn->setToolTip("Clear all effects");
+    clearAllBtn->setFixedSize(kToolButtonSize, kToolButtonSize);
+    clearAllBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
     auto *timersRow = new QWidget(this);
     auto *timersLayout = new QHBoxLayout(timersRow);
     timersLayout->setContentsMargins(0, 0, 0, 0);
     timersLayout->setSpacing(8);
+    timersLayout->setAlignment(Qt::AlignTop);
     auto *fadeSpin = new QSpinBox(this);
     fadeSpin->setRange(0, 60000);
     fadeSpin->setSingleStep(100);
@@ -1570,7 +1584,16 @@ RPGWindow::RPGWindow()
     lifetimeColLayout->addWidget(lifetimeSpin);
     lifetimeColLayout->addWidget(lifetimeLabel);
     timersLayout->addWidget(lifetimeCol);
-    timersLayout->addStretch(1);
+    auto *spawnCol = new QWidget(this);
+    auto *spawnColLayout = new QVBoxLayout(spawnCol);
+    spawnColLayout->setContentsMargins(0, 0, 0, 0);
+    spawnColLayout->setSpacing(2);
+    spawnColLayout->addWidget(spawnBtn, 0, Qt::AlignHCenter);
+    auto *spawnLbl = new QLabel("Click to spawn", spawnCol);
+    spawnLbl->setAlignment(Qt::AlignCenter);
+    spawnLabel_ = spawnLbl;
+    spawnColLayout->addWidget(spawnLbl);
+    timersLayout->addWidget(spawnCol);
     fxLayout->addWidget(timersRow);
 
     auto applyTemplateDefaults = [this, fxCombo, sequenceBox, fadeSpin, lifetimeSpin]() {
@@ -1596,79 +1619,45 @@ RPGWindow::RPGWindow()
 
     QObject::connect(fxCombo, &QComboBox::currentTextChanged, this, applyTemplateDefaults);
 
-    auto *spawnBtn = new QToolButton(this);
-    spawnBtn->setIcon(iconTarget());
-    spawnBtn->setToolTip("Spawn at last click");
-    spawnBtn->setFixedSize(kToolButtonSize, kToolButtonSize);
-    spawnBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    auto *clearAllBtn = new QToolButton(this);
-    clearAllBtn->setIcon(style()->standardIcon(QStyle::SP_TrashIcon));
-    clearAllBtn->setToolTip("Clear all effects");
-    clearAllBtn->setFixedSize(kToolButtonSize, kToolButtonSize);
-    clearAllBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    auto *refreshBtn = new QToolButton(this);
-    refreshBtn->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
-    refreshBtn->setToolTip("Refresh scenes");
-    refreshBtn->setFixedSize(kToolButtonSize, kToolButtonSize);
-    refreshBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-    QIcon copyIcon = QIcon::fromTheme("edit-copy");
-    if (copyIcon.isNull())
-        copyIcon = style()->standardIcon(QStyle::SP_FileDialogContentsView);
-    auto *dupAsTemplateBtn = new QToolButton(this);
-    dupAsTemplateBtn->setIcon(copyIcon);
-    dupAsTemplateBtn->setToolTip("Duplicate as template");
-    dupAsTemplateBtn->setFixedSize(kToolButtonSize, kToolButtonSize);
-    dupAsTemplateBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
-
-    auto *btnRow = new QWidget(this);
-    auto *btnRowLayout = new QHBoxLayout(btnRow);
-    btnRowLayout->setContentsMargins(0, 0, 0, 0);
-    btnRowLayout->setSpacing(6);
-    auto addBtnWithLabel = [&btnRowLayout](QToolButton *btn, const QString &labelText) {
-        auto *col = new QWidget(btn->parentWidget());
-        auto *lay = new QVBoxLayout(col);
-        lay->setContentsMargins(0, 0, 0, 0);
-        lay->setSpacing(2);
-        lay->addWidget(btn, 0, Qt::AlignHCenter);
-        auto *lbl = new QLabel(labelText, col);
-        lbl->setAlignment(Qt::AlignCenter);
-        lbl->setStyleSheet("font-size: 9px;");
-        lay->addWidget(lbl);
-        btnRowLayout->addWidget(col);
-    };
-    addBtnWithLabel(spawnBtn, "Spawn");
-    addBtnWithLabel(clearAllBtn, "Clear all");
-    addBtnWithLabel(refreshBtn, "Refresh");
-    addBtnWithLabel(dupAsTemplateBtn, "Duplicate");
-    fxLayout->addWidget(btnRow);
-
     fxList = new QListWidget(this);
     fxList->setSelectionMode(QAbstractItemView::SingleSelection);
     fxList->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::SelectedClicked);
-    fxList->setMaximumHeight(120);
+    fxList->setMinimumHeight(100);
+    fxList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     fxList->setContextMenuPolicy(Qt::CustomContextMenu);
-    fxLayout->addWidget(new QLabel("Active:", this));
-    fxLayout->addWidget(fxList, /*stretch*/ 1);
+    auto *spawnListSep = new QFrame(this);
+    spawnListSep->setFrameShape(QFrame::HLine);
+    spawnListSep->setFrameShadow(QFrame::Sunken);
+    fxLayout->addWidget(spawnListSep);
+    auto *activeRow = new QWidget(this);
+    auto *activeRowLayout = new QHBoxLayout(activeRow);
+    activeRowLayout->setContentsMargins(0, 0, 0, 0);
+    activeRowLayout->setSpacing(4);
+    activeRowLayout->addWidget(new QLabel("Label color:", this));
+    auto *labelColorBtn = new QToolButton(this);
+    labelColorBtn->setIcon(iconFromColor(labelColor_));
+    labelColorBtn->setToolTip("Set label color for selected FX (or next spawn)");
+    labelColorBtn->setFixedSize(kToolButtonSize, kToolButtonSize);
+    labelColorBtn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    activeRowLayout->addWidget(labelColorBtn);
+    activeRowLayout->addStretch(1);
+    activeRowLayout->addWidget(clearAllBtn);
+    fxLayout->addWidget(activeRow);
 
-    auto *helpGroup = new QGroupBox("Show help", this);
-    helpGroup->setCheckable(true);
-    helpGroup->setChecked(false);
-    auto *helpText = new QTextEdit(helpGroup);
-    helpText->setReadOnly(true);
-    helpText->setMaximumHeight(0);
-    helpText->setHtml(
-        "<p><b>Template scenes:</b> Name scenes <code>FX: Something</code> (any case) to use them as effect templates.</p>"
-        "<p><b>Sequencing:</b> Prefix source names with <code>[250]</code> for staged reveal (ms delay).</p>"
-        "<p><b>Fade-out:</b> Set fade ms &gt; 0 to enable hide transition when clearing.</p>"
-        "<p><b>Lifetime:</b> 0 = infinite; otherwise auto-clear after N seconds.</p>"
-        "<p><b>Per-template defaults:</b> Your fade, lifetime, sequence, and label settings are saved per template when you spawn.</p>");
-    auto *helpLayout = new QVBoxLayout(helpGroup);
-    helpLayout->addWidget(helpText);
-    fxLayout->addWidget(helpGroup);
-
-    QObject::connect(helpGroup, &QGroupBox::toggled, this, [helpText](bool checked) {
-        helpText->setMaximumHeight(checked ? 120 : 0);
+    QObject::connect(labelColorBtn, &QAbstractButton::clicked, this, [this, labelColorBtn]() {
+        QColor chosen = QColorDialog::getColor(labelColor_, this, "Choose label color");
+        if (!chosen.isValid())
+            return;
+        labelColor_ = chosen;
+        labelColorBtn->setIcon(iconFromColor(chosen));
+        const int row = fxList->currentRow();
+        if (row >= 0 && row < (int)activeFx.size()) {
+            const FxInstance &inst = activeFx[static_cast<size_t>(row)];
+            UpdateFxLabelSourcesByEffectUuid(inst.effectUuid, inst.label, argbFromColor(chosen));
+        }
     });
+
+    fxLayout->addWidget(fxList, /*stretch*/ 1);
 
     QObject::connect(fxList, &QListWidget::customContextMenuRequested, this,
                      [this, fxCombo, fadeSpin](const QPoint &pos) {
@@ -1720,7 +1709,6 @@ RPGWindow::RPGWindow()
 
                          QMenu menu(this);
                          auto *clearAct = menu.addAction("Clear selected");
-                         auto *dupAct = menu.addAction("Duplicate as template");
                          QAction *showLabelAct = nullptr;
                          QAction *hideLabelAct = nullptr;
                          if (hasLabel && !labelVisible)
@@ -1731,38 +1719,6 @@ RPGWindow::RPGWindow()
                          QAction *chosen = menu.exec(fxList->mapToGlobal(pos));
                          if (chosen == clearAct) {
                              clearFxAtRow(row, fadeSpin ? fadeSpin->value() : 600);
-                         } else if (chosen == dupAct) {
-                             OBSSourceAutoRelease fxSrc(
-                                 obs_get_source_by_uuid(inst.effectUuid.toUtf8().constData()));
-                             if (!fxSrc.Get() || !obs_source_is_scene(fxSrc.Get()))
-                                 return;
-                             const char *origName = obs_source_get_name(fxSrc.Get());
-                             QString baseName = QString::fromUtf8(origName);
-                             if (!baseName.startsWith("FX", Qt::CaseInsensitive))
-                                 baseName = "FX Spawn " + baseName;
-                             const QString newName = QString("FX: %1 (copy)").arg(baseName);
-                             obs_source_t *dup = obs_source_duplicate(fxSrc.Get(), newName.toUtf8().constData(), true);
-                             if (!dup)
-                                 return;
-                             OBSSourceAutoRelease curSrc(obs_frontend_get_current_scene());
-                             if (curSrc.Get()) {
-                                 obs_scene_t *curScene = obs_scene_from_source(curSrc.Get());
-                                 if (curScene) {
-                                     obs_sceneitem_t *item = obs_scene_add(curScene, dup);
-                                     obs_source_release(dup);
-                                     if (item)
-                                         obs_sceneitem_set_visible(item, false);
-                                 } else {
-                                     obs_source_release(dup);
-                                 }
-                             } else {
-                                 obs_source_release(dup);
-                                 return;
-                             }
-                             AddFxTemplateScenesToCombo(fxCombo);
-                             const int idx = fxCombo->findText(newName);
-                             if (idx >= 0)
-                                 fxCombo->setCurrentIndex(idx);
                          } else if (chosen == showLabelAct || chosen == hideLabelAct) {
                              const bool makeVisible = (chosen == showLabelAct);
                              SetFxLabelsVisibleByEffectUuid(inst.effectUuid, makeVisible);
@@ -1782,31 +1738,27 @@ RPGWindow::RPGWindow()
                              ctxInst = &activeFx[static_cast<size_t>(idx)];
                          }
 
-                         // Determine cursor visibility state for current battlemap scene.
-                         bool cursorVisibleInScene = false;
-                         bool cursorExistsInScene = false;
-                         if (cursorSource_.Get() && sceneCombo_) {
-                             const QString sceneName = sceneCombo_->currentText();
-                             if (!sceneName.isEmpty()) {
-                                 OBSSourceAutoRelease sceneSrc(
-                                     obs_get_source_by_name(sceneName.toUtf8().constData()));
-                                 if (sceneSrc.Get() && obs_source_is_scene(sceneSrc.Get())) {
-                                     obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
-                                     if (scene) {
-                                         CursorItemCtx ctx;
+                        // Determine cursor visibility state for current battlemap scene.
+                        bool cursorVisibleInScene = false;
+                        bool cursorExistsInScene = false;
+                        if (cursorSource_.Get() && sceneCombo_) {
+                            OBSSourceAutoRelease sceneSrc = GetSceneSourceByName(sceneCombo_->currentText());
+                            if (sceneSrc.Get()) {
+                                obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
+                                if (scene) {
+                                    CursorItemCtx ctx;
                                          ctx.cursorSource = cursorSource_.Get();
                                          obs_scene_enum_items(scene, findCursorItemInScene, &ctx);
                                          if (ctx.item) {
                                              cursorExistsInScene = true;
                                              cursorVisibleInScene = obs_sceneitem_visible(ctx.item);
-                                             obs_sceneitem_release(ctx.item);
-                                         }
-                                     }
-                                 }
-                             }
-                         }
+                                            obs_sceneitem_release(ctx.item);
+                                    }
+                                }
+                            }
+                        }
 
-                         QMenu menu(this);
+                        QMenu menu(this);
                          QAction *moveAct = nullptr;
                          QAction *rotateAct = nullptr;
                          QAction *clearAct = nullptr;
@@ -1868,14 +1820,13 @@ RPGWindow::RPGWindow()
                          if (cursorExistsInScene && cursorVisibleInScene)
                              hideCursorAct = menu.addAction(QStringLiteral("Hide cursor"));
                          QAction *chosen = menu.exec(QCursor::pos());
-                         if (chosen == showCursorAct) {
-                             if (ensureCursorSource().Get()) {
-                                 const QString sceneName = sceneCombo_->currentText();
-                                 OBSSourceAutoRelease sceneSrc(obs_get_source_by_name(sceneName.toUtf8().constData()));
-                                 if (sceneSrc.Get() && obs_source_is_scene(sceneSrc.Get())) {
-                                     obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
-                                     if (scene) {
-                                         const uint32_t sceneW = obs_source_get_width(sceneSrc.Get());
+                        if (chosen == showCursorAct) {
+                            if (ensureCursorSource().Get()) {
+                                OBSSourceAutoRelease sceneSrc = GetSceneSourceByName(sceneCombo_->currentText());
+                                if (sceneSrc.Get()) {
+                                    obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
+                                    if (scene) {
+                                        const uint32_t sceneW = obs_source_get_width(sceneSrc.Get());
                                          const uint32_t sceneH = obs_source_get_height(sceneSrc.Get());
                                          const float centerX = (sceneW > 0) ? float(sceneW) * 0.5f : 0.0f;
                                          const float centerY = (sceneH > 0) ? float(sceneH) * 0.5f : 0.0f;
@@ -1888,42 +1839,37 @@ RPGWindow::RPGWindow()
                                          data.boundsSize = kCursorDisplaySize;
                                          obs_enter_graphics();
                                          obs_scene_atomic_update(scene, AddOrUpdateCursorInSceneHelper, &data);
-                                         obs_leave_graphics();
-                                     }
-                                 }
-                             }
-                         } else if (chosen == hideCursorAct) {
-                             if (cursorSource_.Get()) {
-                                 const QString sceneName = sceneCombo_->currentText();
-                                 OBSSourceAutoRelease sceneSrc(obs_get_source_by_name(sceneName.toUtf8().constData()));
-                                 if (sceneSrc.Get() && obs_source_is_scene(sceneSrc.Get())) {
-                                     obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
-                                     if (scene) {
-                                         CursorInSceneData data;
-                                         data.cursorSource = cursorSource_.Get();
-                                         data.visible = false;
-                                         data.createIfMissing = false;
-                                         data.boundsSize = kCursorDisplaySize;
-                                         obs_enter_graphics();
-                                         obs_scene_atomic_update(scene, AddOrUpdateCursorInSceneHelper, &data);
-                                         obs_leave_graphics();
-                                     }
-                                 }
-                             }
-                         } else if (overFx) {
+                                        obs_leave_graphics();
+                                    }
+                                }
+                            }
+                        } else if (chosen == hideCursorAct) {
+                            if (cursorSource_.Get()) {
+                                OBSSourceAutoRelease sceneSrc = GetSceneSourceByName(sceneCombo_->currentText());
+                                if (sceneSrc.Get()) {
+                                    obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
+                                    if (scene) {
+                                        CursorInSceneData data;
+                                        data.cursorSource = cursorSource_.Get();
+                                        data.visible = false;
+                                        data.createIfMissing = false;
+                                        data.boundsSize = kCursorDisplaySize;
+                                        obs_enter_graphics();
+                                        obs_scene_atomic_update(scene, AddOrUpdateCursorInSceneHelper, &data);
+                                        obs_leave_graphics();
+                                    }
+                                }
+                            }
+                        } else if (overFx) {
                              const int row = idx;
                              if (chosen == clearAct) {
                                  clearFxAtRow(row, fadeSpin ? fadeSpin->value() : 600);
                              } else if (chosen == moveAct) {
                                  fxLockMode_ = FxLockMode::Move;
-                                 if (setDirectionCheck_)
-                                     setDirectionCheck_->setChecked(false);
                                  if (display)
                                      display->clearDirectionArrow();
                              } else if (chosen == rotateAct) {
                                  fxLockMode_ = FxLockMode::Rotate;
-                                 if (setDirectionCheck_)
-                                     setDirectionCheck_->setChecked(true);
                              } else if (chosen == showLabelAct || chosen == hideLabelAct) {
                                  const bool makeVisible = (chosen == showLabelAct);
                                  if (ctxInst)
@@ -1938,9 +1884,8 @@ RPGWindow::RPGWindow()
             return;
         }
 
-        // If we're in Set direction mode and selection changed, clear any existing arrow;
-        // arrow will reappear only while dragging.
-        if (setDirectionCheck_ && setDirectionCheck_->isChecked() && display)
+        // If in rotate mode and selection changed, clear arrow until mouse moves again.
+        if (fxLockMode_ == FxLockMode::Rotate && display)
             display->clearDirectionArrow();
     });
 
@@ -1989,17 +1934,12 @@ RPGWindow::RPGWindow()
 
     QObject::connect(refreshBtn, &QAbstractButton::clicked, this, [refreshLists]() { refreshLists(); });
 
-    QObject::connect(spawnBtn, &QAbstractButton::clicked, this,
-                     [this, fxCombo, sequenceBox, fadeSpin, lifetimeSpin, gridCellSpin, snapCheck]() {
-        if (!lastClickInside)
-            return;
-
+    auto doSpawn = [this, fxCombo, sequenceBox, fadeSpin, lifetimeSpin, gridCellSpin, snapCheck](
+                       float spawnX, float spawnY) {
         OBSSourceAutoRelease mapSrc(display->getSceneSourceRef());
         if (!mapSrc.Get())
             return;
 
-        float spawnX = lastClickX;
-        float spawnY = lastClickY;
         if (snapCheck->isChecked() && gridCellSpin->value() > 0) {
             const float cell = static_cast<float>(gridCellSpin->value());
             spawnX = (std::floor(spawnX / cell) + 0.5f) * cell;
@@ -2012,10 +1952,7 @@ RPGWindow::RPGWindow()
 
         const bool seq = sequenceBox->isChecked();
 
-        // Default label is template scene name without the "FX:" prefix.
         QString labelText = DefaultLabelFromTemplateName(fxCombo->currentText());
-
-        // If a custom label is entered, prefer that text for this spawn only.
         if (labelEdit) {
             const QString custom = labelEdit->text().trimmed();
             if (!custom.isEmpty())
@@ -2084,10 +2021,62 @@ RPGWindow::RPGWindow()
             }
         }
 
-        // After spawn, clear the label text box; the placeholder still shows the template's default.
         if (labelEdit)
             labelEdit->clear();
+    };
+
+    QObject::connect(spawnBtn, &QAbstractButton::clicked, this, [this]() {
+        if (spawnMode_) {
+            spawnMode_ = false;
+            spawnBtn_->setChecked(false);
+            spawnLabel_->setText("Click to spawn");
+        } else {
+            spawnMode_ = true;
+            spawnBtn_->setChecked(true);
+            spawnLabel_->setText("Click spawn location");
+        }
     });
+
+    QObject::connect(display, &OBSDisplayWidget::sceneClicked, this,
+                     [this, clickLabel, gridCheck, gridCellSpin, doSpawn](float x, float y, float nx,
+                                                                         float ny, bool inside) {
+                         if (display)
+                             display->clearDirectionArrow();
+
+                         lastClickX = x;
+                         lastClickY = y;
+                         lastClickInside = inside;
+
+                         if (spawnMode_ && inside) {
+                             doSpawn(x, y);
+                             spawnMode_ = false;
+                             spawnBtn_->setChecked(false);
+                             spawnLabel_->setText("Click to spawn");
+                             return;
+                         }
+
+                         if (!inside) {
+                             clickLabel->setText("Click: (outside map)");
+                             return;
+                         }
+
+                         QString text = QString("Click: x=%1 y=%2  |  n=(%3, %4)")
+                                            .arg(x, 0, 'f', 1)
+                                            .arg(y, 0, 'f', 1)
+                                            .arg(nx, 0, 'f', 4)
+                                            .arg(ny, 0, 'f', 4);
+                         if (gridCheck->isChecked() && gridCellSpin->value() > 0) {
+                             const int cell = gridCellSpin->value();
+                             const int col = static_cast<int>(std::floor(x / cell));
+                             const int row = static_cast<int>(std::floor(y / cell));
+                             text += QString("  |  cell (%1, %2)").arg(col).arg(row);
+                         }
+                         clickLabel->setText(text);
+
+                         const int idx = findNearestFxInstanceIndex(x, y);
+                         if (idx >= 0 && idx < fxList->count())
+                             fxList->setCurrentRow(idx);
+                     });
 
     QObject::connect(clearAllBtn, &QAbstractButton::clicked, this, [this, fadeSpin]() {
         const int fadeMs = fadeSpin->value();
@@ -2100,50 +2089,6 @@ RPGWindow::RPGWindow()
         fxList->clear();
         releaseFxLockAndClearArrow();
     });
-
-    QObject::connect(dupAsTemplateBtn, &QAbstractButton::clicked, this,
-                     [this, fxCombo](void) {
-                         const int row = fxList->currentRow();
-                         if (row < 0 || row >= (int)activeFx.size())
-                             return;
-
-                         const FxInstance &inst = activeFx[static_cast<size_t>(row)];
-                         OBSSourceAutoRelease fxSrc(obs_get_source_by_uuid(inst.effectUuid.toUtf8().constData()));
-                         if (!fxSrc.Get() || !obs_source_is_scene(fxSrc.Get()))
-                             return;
-
-                         const char *origName = obs_source_get_name(fxSrc.Get());
-                         QString baseName = QString::fromUtf8(origName);
-                         if (!baseName.startsWith("FX", Qt::CaseInsensitive))
-                             baseName = "FX Spawn " + baseName;
-                         const QString newName =
-                             QString("FX: %1 (copy)").arg(baseName);
-
-                         obs_source_t *dup = obs_source_duplicate(fxSrc.Get(), newName.toUtf8().constData(), true);
-                         if (!dup)
-                             return;
-
-                         OBSSourceAutoRelease curSrc(obs_frontend_get_current_scene());
-                         if (curSrc.Get()) {
-                             obs_scene_t *curScene = obs_scene_from_source(curSrc.Get());
-                             if (curScene) {
-                                 obs_sceneitem_t *item = obs_scene_add(curScene, dup);
-                                 obs_source_release(dup);
-                                 if (item)
-                                     obs_sceneitem_set_visible(item, false);
-                            } else {
-                                obs_source_release(dup);
-                            }
-                         } else {
-                             obs_source_release(dup);
-                             return;
-                         }
-
-                         AddFxTemplateScenesToCombo(fxCombo);
-                         const int idx = fxCombo->findText(newName);
-                         if (idx >= 0)
-                             fxCombo->setCurrentIndex(idx);
-                     });
 
     // Version indicator (in the status bar).
     verLabel->setText(QString("Build (compile): %1 | Plugin mtime: %2")
@@ -2215,8 +2160,8 @@ void RPGWindow::syncGridOutputToScene(const QString &sceneName, bool showOnOutpu
     if (!gridSource_.Get() || sceneName.isEmpty())
         return;
 
-    OBSSourceAutoRelease sceneSrc(obs_get_source_by_name(sceneName.toUtf8().constData()));
-    if (!sceneSrc.Get() || !obs_source_is_scene(sceneSrc.Get()))
+    OBSSourceAutoRelease sceneSrc = GetSceneSourceByName(sceneName);
+    if (!sceneSrc.Get())
         return;
 
     obs_scene_t *scene = obs_scene_from_source(sceneSrc.Get());
@@ -2240,12 +2185,9 @@ void RPGWindow::syncGridOutputToScene(const QString &sceneName, bool showOnOutpu
 
 QString RPGWindow::selectedCursorFilename() const
 {
-    if (!cursorCombo_ || cursorCombo_->count() == 0)
+    if (selectedCursorFilename_.isEmpty())
         return QStringLiteral("cursor.png");
-    QVariant v = cursorCombo_->currentData();
-    if (!v.isValid() || v.toString().isEmpty())
-        return QStringLiteral("cursor.png");
-    return v.toString();
+    return selectedCursorFilename_;
 }
 
 void RPGWindow::updateCursorSourceImage()

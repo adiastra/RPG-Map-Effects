@@ -10,7 +10,10 @@
 class OBSDisplayWidget;
 class QCheckBox;
 class QComboBox;
+class QFrame;
+class QLabel;
 class QListWidget;
+class QToolButton;
 class QLineEdit;
 class QTimer;
 
@@ -46,6 +49,11 @@ private:
     float lastClickY = 0.0f;
     bool lastClickInside = false;
 
+    /** Spawn workflow: user clicks Spawn button then clicks map to place. */
+    bool spawnMode_ = false;
+    QToolButton *spawnBtn_ = nullptr;
+    QLabel *spawnLabel_ = nullptr;
+
     /** FX for the currently selected battlemap only (what we show in the sidebar). */
     std::vector<FxInstance> activeFx;
     /** All FX keyed by battlemap scene UUID; switching maps shows only that map's FX. */
@@ -59,15 +67,16 @@ private:
     QListWidget *fxList = nullptr;
     QLineEdit *labelEdit = nullptr;
     QComboBox *sceneCombo_ = nullptr;
-    QCheckBox *setDirectionCheck_ = nullptr;
-    QComboBox *cursorCombo_ = nullptr;
+    QToolButton *cursorBtn_ = nullptr;
+    QFrame *cursorPopup_ = nullptr;
+    QString selectedCursorFilename_ = QStringLiteral("cursor.png");
 
     OBSSource gridSource_;
     OBSSource cursorSource_;
 
-    /** Selected cursor asset filename (from cursorCombo_). */
+    /** Selected cursor asset filename. */
     QString selectedCursorFilename() const;
-    /** Create or return the cursor image source (uses asset from cursorCombo_). Adds to scene only when user chooses Show cursor. */
+    /** Create or return the cursor image source (uses selected cursor asset). Adds to scene only when user chooses Show cursor. */
     OBSSource ensureCursorSource();
     /** Write selected cursor asset to config file and update cursor source if it exists. */
     void updateCursorSourceImage();
@@ -82,7 +91,7 @@ private:
     void removeFxFromPerMapStore(const FxInstance &inst);
     /** Update the stored copy of this FX's label in fxByMapSceneUuid_. */
     void syncStoredLabel(const FxInstance &inst, const QString &newLabel);
-    /** Clear lock, arrow, and Set direction checkbox. */
+    /** Clear move/rotate lock and direction arrow. */
     void releaseFxLockAndClearArrow();
     /** Get scene item for this instance (non-owning; do not use after scene changes). */
     obs_sceneitem_t *getSceneItemForInstance(const FxInstance &inst) const;
