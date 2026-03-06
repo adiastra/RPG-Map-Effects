@@ -27,6 +27,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMenu>
+#include <QStyledItemDelegate>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSpinBox>
@@ -158,6 +159,38 @@ static uint32_t argbFromColor(const QColor &c)
     return (uint32_t(c.alpha()) << 24) | (uint32_t(c.red()) << 16) |
            (uint32_t(c.green()) << 8) | uint32_t(c.blue());
 }
+
+// Role for storing locked state in FX list items
+static constexpr int kFxItemLockedRole = Qt::UserRole;
+
+// Delegate that draws lock/unlock icon on the right of each FX list item
+class FxListDelegate : public QStyledItemDelegate {
+public:
+    explicit FxListDelegate(QObject *parent = nullptr) : QStyledItemDelegate(parent) {}
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
+    {
+        QStyledItemDelegate::paint(painter, option, index);
+
+        const bool locked = index.data(kFxItemLockedRole).toBool();
+        // Use QString for emoji; QChar only supports BMP (<=0xFFFF), lock emoji are U+1F512/U+1F513
+        const QString icon = locked ? QStringLiteral("\U0001F512") : QStringLiteral("\U0001F513");
+        const int margin = 4;
+        const QRect rect = option.rect.adjusted(margin, 0, -margin, 0);
+
+        painter->save();
+        QPalette::ColorRole textRole = (option.state & QStyle::State_Selected)
+            ? QPalette::HighlightedText : QPalette::WindowText;
+        painter->setPen(option.palette.color(textRole));
+        QFont f = option.font;
+        f.setPixelSize(qMin(rect.height() - 4, 14));
+        painter->setFont(f);
+        const QRect textRect = painter->boundingRect(rect, Qt::AlignRight | Qt::AlignVCenter, icon);
+        painter->drawText(textRect, Qt::AlignRight | Qt::AlignVCenter, icon);
+        painter->restore();
+    }
+};
 
 static QString DefaultLabelFromTemplateName(const QString &templateName)
 {
@@ -1017,11 +1050,16 @@ void RPGWindow::refreshFxListForCurrentMap()
     auto it = fxByMapSceneUuid_.find(currentMapSceneUuid_);
     if (it == fxByMapSceneUuid_.end())
         return;
+    const QString lockedPrefix = QStringLiteral("[Locked] ");
     for (const FxInstance &inst : it.value()) {
         activeFx.push_back(inst);
         if (fxList) {
-            const QString listText = inst.label.isEmpty() ? inst.templateName : inst.label;
-            fxList->addItem(new QListWidgetItem(listText));
+            QString listText = inst.label.isEmpty() ? inst.templateName : inst.label;
+            if (listText.startsWith(lockedPrefix))
+                listText = listText.mid(lockedPrefix.size()).trimmed();
+            auto *item = new QListWidgetItem(listText);
+            item->setData(kFxItemLockedRole, inst.locked);
+            fxList->addItem(item);
         }
     }
     if (fxList) {
@@ -1057,6 +1095,19 @@ void RPGWindow::syncStoredLabel(const FxInstance &inst, const QString &newLabel)
     for (FxInstance &stored : it.value()) {
         if (sameFx(stored, inst)) {
             stored.label = newLabel;
+            break;
+        }
+    }
+}
+
+void RPGWindow::syncStoredLocked(const FxInstance &inst, bool locked)
+{
+    auto it = fxByMapSceneUuid_.find(inst.mapSceneUuid);
+    if (it == fxByMapSceneUuid_.end())
+        return;
+    for (FxInstance &stored : it.value()) {
+        if (sameFx(stored, inst)) {
+            stored.locked = locked;
             break;
         }
     }
@@ -1314,7 +1365,7 @@ RPGWindow::RPGWindow()
     });
 
     QObject::connect(display, &OBSDisplayWidget::sceneMouseMoved, this,
-                     [this, mouseLabel, gridCheck, gridCellSpin](float x, float y,
+                     [this, mouseLabel, gridCheck, gridCellSpin, snapCheck](float x, float y,
                                                                  float nx,
                                                                  float ny,
                                                                  bool inside,
@@ -1376,8 +1427,14 @@ RPGWindow::RPGWindow()
                                  if (item) {
                                      OBSSourceAutoRelease mapSrc(obs_get_source_by_uuid(inst.mapSceneUuid.toUtf8().constData()));
                                      if (mapSrc.Get()) {
+                                         float moveX = x, moveY = y;
+                                         if (snapCheck->isChecked() && gridCellSpin->value() > 0) {
+                                             const float cell = static_cast<float>(gridCellSpin->value());
+                                             moveX = (std::floor(x / cell) + 0.5f) * cell;
+                                             moveY = (std::floor(y / cell) + 0.5f) * cell;
+                                         }
                                          float sceneX = 0.0f, sceneY = 0.0f;
-                                         if (canvasToScene(mapSrc.Get(), x, y, sceneX, sceneY)) {
+                                         if (canvasToScene(mapSrc.Get(), moveX, moveY, sceneX, sceneY)) {
                                              struct vec2 pos;
                                              vec2_set(&pos, sceneX, sceneY);
                                              obs_sceneitem_set_pos(item, &pos);
@@ -1656,6 +1713,7 @@ RPGWindow::RPGWindow()
     fxList->setMinimumHeight(100);
     fxList->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     fxList->setContextMenuPolicy(Qt::CustomContextMenu);
+    fxList->setItemDelegate(new FxListDelegate(this));
     auto *spawnListSep = new QFrame(this);
     spawnListSep->setFrameShape(QFrame::HLine);
     spawnListSep->setFrameShadow(QFrame::Sunken);
@@ -1739,7 +1797,14 @@ RPGWindow::RPGWindow()
                          }
 
                          QMenu menu(this);
+                         QAction *lockAct = nullptr;
+                         QAction *unlockAct = nullptr;
+                         if (inst.locked)
+                             unlockAct = menu.addAction(QStringLiteral("Unlock"));
+                         else
+                             lockAct = menu.addAction(QStringLiteral("Lock"));
                          auto *clearAct = menu.addAction("Clear selected");
+                         clearAct->setEnabled(!inst.locked);
                          QAction *showLabelAct = nullptr;
                          QAction *hideLabelAct = nullptr;
                          if (hasLabel && !labelVisible)
@@ -1748,7 +1813,17 @@ RPGWindow::RPGWindow()
                              hideLabelAct = menu.addAction("Hide label");
 
                          QAction *chosen = menu.exec(fxList->mapToGlobal(pos));
-                         if (chosen == clearAct) {
+                         if (chosen == lockAct) {
+                             inst.locked = true;
+                             syncStoredLocked(inst, true);
+                             if (QListWidgetItem *item = fxList->item(row))
+                                 item->setData(kFxItemLockedRole, true);
+                         } else if (chosen == unlockAct) {
+                             inst.locked = false;
+                             syncStoredLocked(inst, false);
+                             if (QListWidgetItem *item = fxList->item(row))
+                                 item->setData(kFxItemLockedRole, false);
+                         } else if (chosen == clearAct) {
                              clearFxAtRow(row, fadeSpin ? fadeSpin->value() : 600);
                          } else if (chosen == showLabelAct || chosen == hideLabelAct) {
                              const bool makeVisible = (chosen == showLabelAct);
@@ -1793,6 +1868,8 @@ RPGWindow::RPGWindow()
                          QAction *moveAct = nullptr;
                          QAction *rotateAct = nullptr;
                          QAction *resizeAct = nullptr;
+                         QAction *lockAct = nullptr;
+                         QAction *unlockAct = nullptr;
                          QAction *clearAct = nullptr;
                          QAction *showLabelAct = nullptr;
                          QAction *hideLabelAct = nullptr;
@@ -1800,7 +1877,15 @@ RPGWindow::RPGWindow()
                              moveAct = menu.addAction(QStringLiteral("Move"));
                              rotateAct = menu.addAction(QStringLiteral("Rotate"));
                              resizeAct = menu.addAction(QStringLiteral("Resize"));
+                             if (ctxInst) {
+                                 if (ctxInst->locked)
+                                     unlockAct = menu.addAction(QStringLiteral("Unlock"));
+                                 else
+                                     lockAct = menu.addAction(QStringLiteral("Lock"));
+                             }
                              clearAct = menu.addAction(QStringLiteral("Clear"));
+                             if (ctxInst)
+                                 clearAct->setEnabled(!ctxInst->locked);
                              // Label show/hide for this FX instance.
                              if (ctxInst) {
                                  bool hasLabelFx = false;
@@ -1903,6 +1988,16 @@ RPGWindow::RPGWindow()
                                      display->clearDirectionArrow();
                              } else if (chosen == rotateAct) {
                                  fxLockMode_ = FxLockMode::Rotate;
+                             } else if (chosen == lockAct && ctxInst) {
+                                 ctxInst->locked = true;
+                                 syncStoredLocked(*ctxInst, true);
+                                 if (fxList && row >= 0 && row < fxList->count())
+                                     fxList->item(row)->setData(kFxItemLockedRole, true);
+                             } else if (chosen == unlockAct && ctxInst) {
+                                 ctxInst->locked = false;
+                                 syncStoredLocked(*ctxInst, false);
+                                 if (fxList && row >= 0 && row < fxList->count())
+                                     fxList->item(row)->setData(kFxItemLockedRole, false);
                              } else if (chosen == resizeAct) {
                                  fxLockMode_ = FxLockMode::Resize;
                                  if (display)
@@ -1953,7 +2048,11 @@ RPGWindow::RPGWindow()
             return;
 
         FxInstance &inst = activeFx[static_cast<size_t>(row)];
-        const QString newLabel = item->text().trimmed();
+        QString newLabel = item->text().trimmed();
+        // Strip [Locked] prefix so we never store it; it's display-only.
+        const QString lockedPrefix = QStringLiteral("[Locked] ");
+        if (newLabel.startsWith(lockedPrefix))
+            newLabel = newLabel.mid(lockedPrefix.size()).trimmed();
         inst.label = newLabel;
         syncStoredLabel(inst, newLabel);
 
@@ -2043,6 +2142,7 @@ RPGWindow::RPGWindow()
                 const QString listText = inst.label.isEmpty() ? inst.templateName : inst.label;
                 auto *item = new QListWidgetItem(listText);
                 item->setFlags(item->flags() | Qt::ItemIsEditable);
+                item->setData(kFxItemLockedRole, false);
                 fxList->addItem(item);
                 fxList->setCurrentRow(fxList->count() - 1);
             }
@@ -2135,13 +2235,13 @@ RPGWindow::RPGWindow()
 
     QObject::connect(clearAllBtn, &QAbstractButton::clicked, this, [this, fadeSpin]() {
         const int fadeMs = fadeSpin->value();
-        for (const FxInstance &inst : activeFx)
-            fadeOutAndRemoveInstance(inst, fadeMs);
-
-        if (!currentMapSceneUuid_.isEmpty())
-            fxByMapSceneUuid_.remove(currentMapSceneUuid_);
-        activeFx.clear();
-        fxList->clear();
+        for (const FxInstance &inst : activeFx) {
+            if (!inst.locked) {
+                fadeOutAndRemoveInstance(inst, fadeMs);
+                removeFxFromPerMapStore(inst);
+            }
+        }
+        refreshFxListForCurrentMap();
         releaseFxLockAndClearArrow();
     });
 

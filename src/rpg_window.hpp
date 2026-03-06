@@ -37,6 +37,7 @@ private:
         int64_t sceneItemId = 0;
         QString label;        // user-visible label text on the map
         QString templateName; // template scene name used for this instance
+        bool locked = false;  // when true, excluded from Clear all
     };
     static bool sameFx(const FxInstance &a, const FxInstance &b);
 
@@ -95,6 +96,8 @@ private:
     void removeFxFromPerMapStore(const FxInstance &inst);
     /** Update the stored copy of this FX's label in fxByMapSceneUuid_. */
     void syncStoredLabel(const FxInstance &inst, const QString &newLabel);
+    /** Update the stored copy of this FX's locked state in fxByMapSceneUuid_. */
+    void syncStoredLocked(const FxInstance &inst, bool locked);
     /** Clear move/rotate lock and direction arrow. */
     void releaseFxLockAndClearArrow();
     /** Get scene item for this instance (non-owning; do not use after scene changes). */
