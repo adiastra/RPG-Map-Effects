@@ -1388,6 +1388,36 @@ RPGWindow::RPGWindow()
                              return;
                          }
 
+                         // Resize: from context menu (Resize) only. Distance from FX center = scale.
+                         if (fxLockMode_ == FxLockMode::Resize && display && fxList && inside) {
+                             const int row = fxList->currentRow();
+                             if (row >= 0 && row < (int)activeFx.size()) {
+                                 const FxInstance &inst = activeFx[static_cast<size_t>(row)];
+                                 obs_sceneitem_t *item = getSceneItemForInstance(inst);
+                                 if (item) {
+                                     OBSSourceAutoRelease mapSrc(obs_get_source_by_uuid(inst.mapSceneUuid.toUtf8().constData()));
+                                     if (mapSrc.Get()) {
+                                         struct vec2 pos;
+                                         obs_sceneitem_get_pos(item, &pos);
+                                         float cx = 0.0f, cy = 0.0f;
+                                         if (scenePosToCanvas(mapSrc.Get(), pos.x, pos.y, cx, cy)) {
+                                             const float dx = x - cx;
+                                             const float dy = y - cy;
+                                             const float dist = std::sqrt(dx * dx + dy * dy);
+                                             const float ratio = (resizeStartDistance_ > 1.0f)
+                                                 ? (dist / resizeStartDistance_) : 1.0f;
+                                             float s = resizeStartScale_ * ratio;
+                                             s = (s < 0.1f) ? 0.1f : ((s > 5.0f) ? 5.0f : s);
+                                             struct vec2 scale;
+                                             vec2_set(&scale, s, s);
+                                             obs_sceneitem_set_scale(item, &scale);
+                                         }
+                                     }
+                                 }
+                             }
+                             return;
+                         }
+
                          // Rotate: from context menu (Rotate) only
                          const bool inRotateMode = (fxLockMode_ == FxLockMode::Rotate);
                          if (!display || !inRotateMode || !fxList) {
@@ -1762,12 +1792,14 @@ RPGWindow::RPGWindow()
                         QMenu menu(this);
                          QAction *moveAct = nullptr;
                          QAction *rotateAct = nullptr;
+                         QAction *resizeAct = nullptr;
                          QAction *clearAct = nullptr;
                          QAction *showLabelAct = nullptr;
                          QAction *hideLabelAct = nullptr;
                          if (overFx) {
                              moveAct = menu.addAction(QStringLiteral("Move"));
                              rotateAct = menu.addAction(QStringLiteral("Rotate"));
+                             resizeAct = menu.addAction(QStringLiteral("Resize"));
                              clearAct = menu.addAction(QStringLiteral("Clear"));
                              // Label show/hide for this FX instance.
                              if (ctxInst) {
@@ -1871,6 +1903,28 @@ RPGWindow::RPGWindow()
                                      display->clearDirectionArrow();
                              } else if (chosen == rotateAct) {
                                  fxLockMode_ = FxLockMode::Rotate;
+                             } else if (chosen == resizeAct) {
+                                 fxLockMode_ = FxLockMode::Resize;
+                                 if (display)
+                                     display->clearDirectionArrow();
+                                 // Capture initial scale and distance at right-click for immediate feedback.
+                                 obs_sceneitem_t *item = getSceneItemForInstance(*ctxInst);
+                                 if (item) {
+                                     struct vec2 pos, scale;
+                                     obs_sceneitem_get_pos(item, &pos);
+                                     obs_sceneitem_get_scale(item, &scale);
+                                     resizeStartScale_ = (scale.x + scale.y) * 0.5f;
+                                     OBSSourceAutoRelease mapSrc(obs_get_source_by_uuid(ctxInst->mapSceneUuid.toUtf8().constData()));
+                                     if (mapSrc.Get()) {
+                                         float cx = 0.0f, cy = 0.0f;
+                                         if (scenePosToCanvas(mapSrc.Get(), pos.x, pos.y, cx, cy)) {
+                                             const float dx = sceneX - cx;
+                                             const float dy = sceneY - cy;
+                                             resizeStartDistance_ = (std::sqrt(dx * dx + dy * dy) > 5.0f)
+                                                 ? std::sqrt(dx * dx + dy * dy) : 100.0f;
+                                         }
+                                     }
+                                 }
                              } else if (chosen == showLabelAct || chosen == hideLabelAct) {
                                  const bool makeVisible = (chosen == showLabelAct);
                                  if (ctxInst)

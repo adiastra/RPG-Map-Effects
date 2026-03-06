@@ -60,9 +60,13 @@ private:
     QMap<QString, std::vector<FxInstance>> fxByMapSceneUuid_;
     QString currentMapSceneUuid_;
 
-    /** Right-click menu lock: move or rotate the selected FX until left-click releases. */
-    enum class FxLockMode { None, Move, Rotate };
+    /** Right-click menu lock: move, rotate, or resize the selected FX until left-click releases. */
+    enum class FxLockMode { None, Move, Rotate, Resize };
     FxLockMode fxLockMode_ = FxLockMode::None;
+
+    /** Resize mode: initial scale and distance from FX center when Resize was entered. */
+    float resizeStartScale_ = 1.0f;
+    float resizeStartDistance_ = 100.0f;
 
     QListWidget *fxList = nullptr;
     QLineEdit *labelEdit = nullptr;
