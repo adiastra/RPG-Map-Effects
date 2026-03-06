@@ -13,7 +13,7 @@ Everything lives inside this plugin; it uses only public OBS APIs and does **not
 patching OBS core.
 
 
-## This image (below) for video instructions
+## Click this image (below) for video instructions
 [![IMAGE ALT TEXT HERE](https://img.youtube.com/vi/U_O7mSwl27I/0.jpg)](https://www.youtube.com/watch?v=U_O7mSwl27I)
 
 https://www.youtube.com/watch?v=U_O7mSwl27I
