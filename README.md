@@ -12,6 +12,9 @@
 Everything lives inside this plugin; it uses only public OBS APIs and does **not** require
 patching OBS core.
 
+[![Video Title](https://img.youtube.com/vi/U_O7mSwl27I/0.jpg)]([https://www.youtube.com/watch?v=VIDEO_ID](https://youtu.be/U_O7mSwl27I))
+
+
 ---
 ![SCR-20260305-mpfe](https://github.com/user-attachments/assets/924e8cc2-3766-4287-9349-76c99455cb3d)
 
