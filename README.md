@@ -184,3 +184,7 @@ See **[RELEASING.md](RELEASING.md)** for full steps, optional code signing/notar
 - The UI is a **floating window**, not a dock, to maximize map real estate.
 - All scene and source manipulation uses the public OBS API; no OBS core patches are required.
 
+## License
+
+RPG Map Effects is licensed under the GNU General Public License v2.0. See [LICENSE](LICENSE) for details.
+
