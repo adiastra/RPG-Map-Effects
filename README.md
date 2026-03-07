@@ -184,6 +184,11 @@ See **[RELEASING.md](RELEASING.md)** for full steps, optional code signing/notar
 - The UI is a **floating window**, not a dock, to maximize map real estate.
 - All scene and source manipulation uses the public OBS API; no OBS core patches are required.
 
+## TODO
+
+- [x] **Reset FX size** – Be able to reset the size of an FX (in case we want it back to standard size).
+- [x] **Organize FX context menu** – Organize the FX context menu logically with possible separators and maybe submenus if logical.
+
 ## License
 
 RPG Map Effects is licensed under the GNU General Public License v2.0. See [LICENSE](LICENSE) for details.

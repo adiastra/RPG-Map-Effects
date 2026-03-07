@@ -809,8 +809,8 @@ static void SpawnFxAtClick(const QString &templateSceneName, obs_source_t *mapSc
     obs_sceneitem_set_alignment(fxItem, OBS_ALIGN_CENTER);
     obs_sceneitem_set_pos(fxItem, &pos);
 
-    // Default facing: up (top of screen). OBS rotation 0 = right, -90 = up.
-    obs_sceneitem_set_rot(fxItem, -90.0f);
+    // Spawn in template's natural orientation (OBS 0° = right). Use Rotate to face up or other directions.
+    obs_sceneitem_set_rot(fxItem, 0.0f);
 
     // Default: additive blend over the battlemap.
     obs_sceneitem_set_blending_mode(fxItem, OBS_BLEND_ADDITIVE);
@@ -1514,7 +1514,8 @@ RPGWindow::RPGWindow()
                          const float dy = y - cy;
                          const float angleRad = std::atan2(dy, dx);
                          const float angleDeg = angleRad * (180.0f / 3.14159265f);
-                         obs_sceneitem_set_rot(item, angleDeg);
+                         // Align with direction arrow: atan2 gives 0°=right, -90°=up. Template default (0°) is "up", so store rotation as angleDeg+90 so cursor up → 0°.
+                         obs_sceneitem_set_rot(item, angleDeg + 90.0f);
                      });
 
     // Left-click release: exit move/rotate lock.
@@ -1797,23 +1798,33 @@ RPGWindow::RPGWindow()
                          }
 
                          QMenu menu(this);
+                         auto *resetSizeAct = menu.addAction(QStringLiteral("Reset size"));
+                         menu.addSeparator();
                          QAction *lockAct = nullptr;
                          QAction *unlockAct = nullptr;
                          if (inst.locked)
                              unlockAct = menu.addAction(QStringLiteral("Unlock"));
                          else
                              lockAct = menu.addAction(QStringLiteral("Lock"));
-                         auto *clearAct = menu.addAction("Clear selected");
+                         auto *clearAct = menu.addAction(QStringLiteral("Clear selected"));
                          clearAct->setEnabled(!inst.locked);
+                         menu.addSeparator();
                          QAction *showLabelAct = nullptr;
                          QAction *hideLabelAct = nullptr;
                          if (hasLabel && !labelVisible)
-                             showLabelAct = menu.addAction("Show label");
+                             showLabelAct = menu.addAction(QStringLiteral("Show label"));
                          if (hasLabel && labelVisible)
-                             hideLabelAct = menu.addAction("Hide label");
+                             hideLabelAct = menu.addAction(QStringLiteral("Hide label"));
 
                          QAction *chosen = menu.exec(fxList->mapToGlobal(pos));
-                         if (chosen == lockAct) {
+                         if (chosen == resetSizeAct) {
+                             obs_sceneitem_t *item = getSceneItemForInstance(inst);
+                             if (item) {
+                                 struct vec2 scale;
+                                 vec2_set(&scale, 1.0f, 1.0f);
+                                 obs_sceneitem_set_scale(item, &scale);
+                             }
+                         } else if (chosen == lockAct) {
                              inst.locked = true;
                              syncStoredLocked(inst, true);
                              if (QListWidgetItem *item = fxList->item(row))
@@ -1868,6 +1879,7 @@ RPGWindow::RPGWindow()
                          QAction *moveAct = nullptr;
                          QAction *rotateAct = nullptr;
                          QAction *resizeAct = nullptr;
+                         QAction *resetSizeAct = nullptr;
                          QAction *lockAct = nullptr;
                          QAction *unlockAct = nullptr;
                          QAction *clearAct = nullptr;
@@ -1877,6 +1889,8 @@ RPGWindow::RPGWindow()
                              moveAct = menu.addAction(QStringLiteral("Move"));
                              rotateAct = menu.addAction(QStringLiteral("Rotate"));
                              resizeAct = menu.addAction(QStringLiteral("Resize"));
+                             resetSizeAct = menu.addAction(QStringLiteral("Reset size"));
+                             menu.addSeparator();
                              if (ctxInst) {
                                  if (ctxInst->locked)
                                      unlockAct = menu.addAction(QStringLiteral("Unlock"));
@@ -1886,6 +1900,7 @@ RPGWindow::RPGWindow()
                              clearAct = menu.addAction(QStringLiteral("Clear"));
                              if (ctxInst)
                                  clearAct->setEnabled(!ctxInst->locked);
+                             menu.addSeparator();
                              // Label show/hide for this FX instance.
                              if (ctxInst) {
                                  bool hasLabelFx = false;
@@ -1929,6 +1944,7 @@ RPGWindow::RPGWindow()
                                  if (hasLabelFx && labelVisibleFx)
                                      hideLabelAct = menu.addAction(QStringLiteral("Hide label"));
                              }
+                             menu.addSeparator();
                          }
                          static constexpr float kCursorDisplaySize = 48.0f;
                          QAction *showCursorAct = nullptr;
@@ -2019,6 +2035,13 @@ RPGWindow::RPGWindow()
                                                  ? std::sqrt(dx * dx + dy * dy) : 100.0f;
                                          }
                                      }
+                                 }
+                             } else if (chosen == resetSizeAct && ctxInst) {
+                                 obs_sceneitem_t *item = getSceneItemForInstance(*ctxInst);
+                                 if (item) {
+                                     struct vec2 scale;
+                                     vec2_set(&scale, 1.0f, 1.0f);
+                                     obs_sceneitem_set_scale(item, &scale);
                                  }
                              } else if (chosen == showLabelAct || chosen == hideLabelAct) {
                                  const bool makeVisible = (chosen == showLabelAct);
